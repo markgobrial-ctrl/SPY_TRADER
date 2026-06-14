@@ -123,6 +123,9 @@ Step 9 — Report format:
 💰 SIZING: [Contracts, premium, outlay, max loss]
 📈 BOOK: [Open positions, entry, current, % P&L]
 ⏱ NEXT: [What to watch]
+💾 ACCOUNT_JSON: {"buyingPower":0,"portfolioValue":0,"totalPnl":0}
+
+Replace the zeros in ACCOUNT_JSON with real values from the portfolio tool. This line must always appear.
 
 HARD RULES: ONLY 9:35–11 AM entries. ONLY SPY 0DTE. ONLY 1–2 contracts, max $400. NEVER past 3:45 PM. NEVER VIX <16 or >35. NEVER <0.4% move. ONE trade/day max unless first closed profitably. Execute autonomously.`;
 
@@ -154,10 +157,18 @@ async function runScan(instruction = null) {
     const text = output.trim();
     const didTrade = /place_option_order|placed.*order|bought|sold/i.test(text);
 
+    // Extract account data from JSON footer in scan output
+    let account = null;
+    const acctMatch = text.match(/ACCOUNT_JSON:\s*(\{[^}]+\})/);
+    if (acctMatch) {
+      try { account = JSON.parse(acctMatch[1]); } catch {}
+    }
+
     await push({
       type: "agent",
       content: text,
       trade: didTrade,
+      ...(account ? { account } : {}),
     });
 
     console.log(`[${getETTime()}] Scan done. Trade: ${didTrade}`);
@@ -189,7 +200,7 @@ if (action) {
 async function pushAccountData() {
   try {
     const output = execFileSync("claude", [
-      "--model", "claude-haiku-4-5-20251001",
+      "--model", "claude-sonnet-4-6",
       "--max-turns", "3",
       "-p", `Use the robinhood-trading MCP to get portfolio and account info for account ${ACCOUNT_NUMBER}. Reply ONLY with a JSON object (no markdown) with these fields: accountNumber, buyingPower, portfolioValue, totalPnl. Use numbers not strings for numeric fields.`,
     ], {
@@ -207,8 +218,15 @@ async function pushAccountData() {
   }
 }
 
-// Only push account data once every 5 minutes to save API calls
-if (!state.lastAccountPush || Date.now() - state.lastAccountPush > 5 * 60 * 1000) {
+// Only push account data during market hours, once every 15 minutes
+const nearMarket = (() => {
+  const et = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const day = et.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = et.getHours() * 60 + et.getMinutes();
+  return mins >= 9 * 60 + 30 && mins < 16 * 60 + 15;
+})();
+if (nearMarket && (!state.lastAccountPush || Date.now() - state.lastAccountPush > 15 * 60 * 1000)) {
   await pushAccountData();
   saveState({ ...state, lastAccountPush: Date.now() });
 }
