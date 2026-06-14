@@ -358,6 +358,41 @@ app.get("/api/stats", (req, res) => {
   res.json({ ...db.data.stats, enabled: db.data.agentEnabled, interval: db.data.scanInterval, scanning });
 });
 
+// ── Account data (fetches live from Robinhood via Claude MCP, cached 30s) ─────
+let acctCache = null, acctCacheAt = 0;
+
+app.get("/api/account", async (req, res) => {
+  if (acctCache && Date.now() - acctCacheAt < 30_000) return res.json(acctCache);
+  try {
+    const r = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1200,
+      system: "Return ONLY valid JSON. No markdown, no code fences, no explanation. Raw JSON only.",
+      messages: [{
+        role: "user",
+        content: `Account: ${ACCOUNT_NUMBER}. Fetch and return exactly this JSON structure:
+{"buying_power":NUMBER,"portfolio_value":NUMBER,"positions":[{"type":"call or put","strike":NUMBER,"expiry":"YYYY-MM-DD","qty":NUMBER,"avg_cost":NUMBER,"current_price":NUMBER,"pnl_pct":NUMBER}]}
+Steps:
+1) Call get_portfolio to get buying_power and portfolio_value (total equity).
+2) Call get_option_positions to get open option positions. Only include positions where quantity > 0.
+3) For each open position, call get_option_quotes to get current_price, then calculate pnl_pct = ((current_price - avg_cost) / avg_cost) * 100.
+Return empty array for positions if none open.`,
+      }],
+      mcp_servers: [{ type: "url", url: MCP_RH, name: "robinhood" }],
+    });
+    const text = r.content.filter(b => b.type === "text").map(b => b.text).join("").trim();
+    const m = text.match(/\{[\s\S]*\}/);
+    const data = m ? JSON.parse(m[0]) : { buying_power: null, portfolio_value: null, positions: [] };
+    const stats = db.data.stats;
+    const winRate = stats.totalTrades > 0 ? Math.round((stats.wins / stats.totalTrades) * 100) : null;
+    acctCache = { ...data, stats: { ...stats, winRate } };
+    acctCacheAt = Date.now();
+    res.json(acctCache);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Health check for Render
 app.get("/health", (req, res) => res.json({ ok: true, time: getETTime() }));
 
