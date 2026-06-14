@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#09090b" />
+  <title>SPY/0DTE Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body { background: #09090b; color: #e4e4e7; font-family: 'Courier New', monospace; font-size: 13px; min-height: 100vh; display: flex; flex-direction: column; }
+    .header { background: #09090b; border-bottom: 1px solid #27272a; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+    .header-title { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: -0.3px; }
+    .header-sub { font-size: 10px; color: #52525b; margin-top: 1px; }
+    .header-right { display: flex; align-items: center; gap: 8px; }
+    .badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; border: 1px solid; text-transform: uppercase; }
+    .badge-gray   { background: rgba(63,63,70,.4);   color: #a1a1aa; border-color: #3f3f46; }
+    .badge-green  { background: rgba(16,185,129,.15); color: #6ee7b7; border-color: rgba(16,185,129,.3); }
+    .badge-red    { background: rgba(239,68,68,.15);  color: #fca5a5; border-color: rgba(239,68,68,.3); }
+    .badge-orange { background: rgba(249,115,22,.15); color: #fdba74; border-color: rgba(249,115,22,.3); }
+    .badge-blue   { background: rgba(59,130,246,.15); color: #93c5fd; border-color: rgba(59,130,246,.3); }
+    .pulse-wrap { position: relative; width: 8px; height: 8px; display: inline-flex; }
+    .pulse-ring { position: absolute; inset: 0; border-radius: 50%; animation: ping 1.2s cubic-bezier(0,0,.2,1) infinite; }
+    .pulse-dot  { position: relative; width: 8px; height: 8px; border-radius: 50%; }
+    .pulse-green .pulse-ring { background: #34d399; opacity: .7; }
+    .pulse-green .pulse-dot  { background: #10b981; }
+    .pulse-orange .pulse-ring { background: #fb923c; opacity: .7; }
+    .pulse-orange .pulse-dot  { background: #f97316; }
+    .dot-off { width: 8px; height: 8px; border-radius: 50%; background: #3f3f46; display: inline-block; }
+    @keyframes ping { 75%,100% { transform: scale(2); opacity: 0; } }
+    .control-panel { padding: 12px 16px; border-bottom: 1px solid #27272a; display: flex; flex-direction: column; gap: 10px; transition: background .2s; }
+    .control-panel.active { background: rgba(124,45,18,.15); border-bottom-color: rgba(154,52,18,.4); }
+    .toggle-row { display: flex; align-items: center; gap: 12px; }
+    .toggle-label { font-size: 11px; color: #71717a; text-transform: uppercase; letter-spacing: .08em; }
+    .toggle-status { font-size: 11px; }
+    .toggle-status.on  { color: #fb923c; }
+    .toggle-status.off { color: #52525b; }
+    .toggle-btn { width: 48px; height: 26px; border-radius: 13px; border: none; cursor: pointer; position: relative; transition: background .2s; }
+    .toggle-btn.on  { background: #ea580c; }
+    .toggle-btn.off { background: #3f3f46; }
+    .toggle-knob { position: absolute; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left .2s; }
+    .toggle-btn.on  .toggle-knob { left: 25px; }
+    .toggle-btn.off .toggle-knob { left: 3px; }
+    .interval-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .interval-label { font-size: 11px; color: #52525b; }
+    .interval-btn { padding: 4px 10px; border-radius: 4px; border: 1px solid #3f3f46; background: #18181b; color: #71717a; font-size: 11px; cursor: pointer; font-family: inherit; transition: all .15s; }
+    .interval-btn.active { background: rgba(124,45,18,.4); border-color: #c2410c; color: #fb923c; }
+    .countdown { font-size: 11px; color: #52525b; margin-left: auto; }
+    .actions { padding: 8px 16px; border-bottom: 1px solid #27272a; display: flex; gap: 6px; flex-wrap: wrap; }
+    .action-btn { padding: 6px 10px; border-radius: 4px; border: 1px solid #27272a; background: #18181b; color: #a1a1aa; font-size: 11px; cursor: pointer; font-family: inherit; transition: all .15s; white-space: nowrap; }
+    .action-btn:active { background: #27272a; }
+    .action-btn.danger { border-color: #7f1d1d; color: #fca5a5; background: rgba(127,29,29,.2); }
+    .action-btn.danger:active { background: rgba(127,29,29,.4); }
+    .stats-bar { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid #27272a; background: #0a0a0b; }
+    .stat { padding: 8px 12px; border-right: 1px solid #18181b; }
+    .stat:last-child { border-right: none; }
+    .stat-label { font-size: 9px; color: #52525b; text-transform: uppercase; letter-spacing: .06em; }
+    .stat-value { font-size: 15px; font-weight: 700; margin-top: 2px; }
+    .stat-value.green { color: #34d399; } .stat-value.red { color: #f87171; } .stat-value.blue { color: #60a5fa; } .stat-value.white { color: #fff; }
+    .legend { padding: 5px 16px; border-bottom: 1px solid #18181b; font-size: 10px; color: #3f3f46; display: flex; gap: 8px; flex-wrap: wrap; }
+    .legend .window { color: #16a34a; font-weight: 600; }
+    .legend .close  { color: #7f1d1d; }
+    .log-area { flex: 1; overflow-y: auto; padding: 4px 0; }
+    .log-entry { display: flex; gap: 8px; padding: 4px 16px; line-height: 1.5; border-bottom: 1px solid #0f0f10; }
+    .log-entry:hover { background: rgba(255,255,255,.02); }
+    .log-time  { font-size: 10px; color: #3f3f46; min-width: 68px; padding-top: 1px; flex-shrink: 0; }
+    .log-icon  { flex-shrink: 0; }
+    .log-text  { flex: 1; word-break: break-word; white-space: pre-wrap; font-size: 12px; }
+    .log-entry.agent { color: #7dd3fc; } .log-entry.trade { color: #6ee7b7; } .log-entry.error { color: #fca5a5; }
+    .log-entry.warn  { color: #fcd34d; } .log-entry.info  { color: #71717a; } .log-entry.auto  { color: #fdba74; }
+    .log-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; color: #3f3f46; }
+    .log-empty .icon { font-size: 36px; margin-bottom: 8px; }
+    .input-bar { border-top: 1px solid #27272a; padding: 10px 16px; display: flex; gap: 8px; background: #09090b; }
+    .input-bar input { flex: 1; background: #18181b; border: 1px solid #3f3f46; border-radius: 6px; padding: 8px 10px; color: #e4e4e7; font-family: inherit; font-size: 12px; outline: none; }
+    .input-bar input:focus { border-color: #52525b; }
+    .input-bar input::placeholder { color: #3f3f46; }
+    .send-btn { padding: 8px 14px; border-radius: 6px; border: 1px solid #1e3a5f; background: rgba(30,58,95,.4); color: #93c5fd; font-size: 12px; font-family: inherit; cursor: pointer; }
+    .send-btn:disabled { opacity: .4; cursor: default; }
+    .tab-bar { display: flex; border-top: 1px solid #27272a; background: #09090b; }
+    .tab { flex: 1; padding: 10px 4px; text-align: center; font-size: 10px; color: #52525b; cursor: pointer; border-top: 2px solid transparent; transition: all .15s; }
+    .tab.active { color: #e4e4e7; border-top-color: #e4e4e7; }
+    .tab-icon { font-size: 16px; display: block; margin-bottom: 2px; }
+    .trades-list { flex: 1; overflow-y: auto; }
+    .trade-card { padding: 10px 16px; border-bottom: 1px solid #18181b; }
+    .trade-card-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .trade-card-time { font-size: 10px; color: #52525b; }
+    .trade-card-body { font-size: 11px; color: #a1a1aa; line-height: 1.5; }
+    .panel { display: none; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
+    .panel.active { display: flex; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">SPY / 0DTE</div>
+    <div class="header-sub" id="acct-label">Connecting…</div>
+  </div>
+  <div class="header-right">
+    <div id="pulse-container"><span class="dot-off"></span></div>
+    <span id="status-badge" class="badge badge-gray">OFFLINE</span>
+  </div>
+</div>
+
+<div class="control-panel" id="control-panel">
+  <div class="toggle-row">
+    <span class="toggle-label">Auto Mode</span>
+    <button class="toggle-btn off" id="toggle-btn" onclick="toggleAgent()">
+      <span class="toggle-knob"></span>
+    </button>
+    <span class="toggle-status off" id="toggle-status">Off — manual only</span>
+    <button class="action-btn danger" id="estop-btn" onclick="emergencyStop()" style="display:none;margin-left:auto;">🛑 E-STOP</button>
+  </div>
+  <div class="interval-row">
+    <span class="interval-label">Every</span>
+    <button class="interval-btn" data-mins="5"  onclick="setInterval_(5)">5m</button>
+    <button class="interval-btn" data-mins="10" onclick="setInterval_(10)">10m</button>
+    <button class="interval-btn" data-mins="15" onclick="setInterval_(15)">15m</button>
+    <button class="interval-btn" data-mins="30" onclick="setInterval_(30)">30m</button>
+    <span class="countdown" id="countdown"></span>
+  </div>
+</div>
+
+<div class="stats-bar">
+  <div class="stat"><div class="stat-label">Scans</div><div class="stat-value white" id="stat-scans">—</div></div>
+  <div class="stat"><div class="stat-label">Trades</div><div class="stat-value blue" id="stat-trades">—</div></div>
+  <div class="stat"><div class="stat-label">P&amp;L</div><div class="stat-value white" id="stat-pnl">—</div></div>
+</div>
+
+<div class="actions">
+  <button class="action-btn" onclick="manualScan()">📊 Scan</button>
+  <button class="action-btn" onclick="sendInstruction('Show all open SPY option positions and current P&amp;L.')">📋 Positions</button>
+  <button class="action-btn danger" onclick="closeAll()">🔒 Close All</button>
+  <button class="action-btn" onclick="sendInstruction('Show buying power and portfolio summary.')">💰 Account</button>
+</div>
+
+<div class="legend">
+  <span class="window">9:35–11:00 TRADE WINDOW</span>
+  <span>·</span><span>VIX 16–35</span>
+  <span>·</span><span>SPY &gt;0.4%</span>
+  <span>·</span><span class="close">3:45+ close all</span>
+</div>
+
+<div class="panel active" id="panel-log">
+  <div class="log-area" id="log-area">
+    <div class="log-empty"><div class="icon">📡</div><div>Connecting…</div></div>
+  </div>
+  <div class="input-bar">
+    <input id="msg-input" placeholder="Override instruction…" onkeydown="if(event.key==='Enter')sendMsg()" />
+    <button class="send-btn" onclick="sendMsg()">Send</button>
+  </div>
+</div>
+
+<div class="panel" id="panel-trades">
+  <div class="trades-list" id="trades-list">
+    <div class="log-empty"><div class="icon">⚡</div><div>No trades yet</div></div>
+  </div>
+</div>
+
+<div class="tab-bar">
+  <div class="tab active" id="tab-log" onclick="switchTab('log')"><span class="tab-icon">📟</span>Live Log</div>
+  <div class="tab" id="tab-trades" onclick="switchTab('trades')"><span class="tab-icon">⚡</span>Trades</div>
+</div>
+
+<script>
+let agentEnabled = false, scanning = false, currentInterval = 10;
+let nextScanAt = null, countdownTimer = null;
+let logs = [], trades = [];
+const ACCOUNT = "5UV19627";
+
+function connect() {
+  const es = new EventSource("/api/stream");
+  es.addEventListener("init", e => {
+    const d = JSON.parse(e.data);
+    logs = d.logs || []; trades = d.trades || [];
+    agentEnabled = d.enabled; currentInterval = d.interval || 10; scanning = d.scanning;
+    updateStats(d.stats); updateAgentUI(); renderLogs(); renderTrades();
+    document.getElementById("acct-label").textContent = "ACCT " + ACCOUNT + " · ROBINHOOD";
+  });
+  es.addEventListener("log",   e => { const entry = JSON.parse(e.data); logs.unshift(entry); if(logs.length>200)logs.pop(); prependLog(entry); });
+  es.addEventListener("trade", e => { trades.unshift(JSON.parse(e.data)); renderTrades(); });
+  es.addEventListener("stats",    e => updateStats(JSON.parse(e.data)));
+  es.addEventListener("enabled",  e => { agentEnabled = JSON.parse(e.data); updateAgentUI(); });
+  es.addEventListener("interval", e => { currentInterval = JSON.parse(e.data); updateIntervalBtns(); });
+  es.addEventListener("status",   e => { scanning = JSON.parse(e.data).scanning; updateStatusBadge(); if(scanning) nextScanAt=null; });
+  es.addEventListener("emergency",() => { agentEnabled=false; updateAgentUI(); alert("🛑 Emergency stop triggered"); });
+  es.onerror = () => { updateStatusBadge("OFFLINE"); setTimeout(connect, 3000); };
+}
+
+function updateStats(s) {
+  if (!s) return;
+  document.getElementById("stat-scans").textContent  = s.totalScans  ?? "—";
+  document.getElementById("stat-trades").textContent = s.totalTrades ?? "—";
+  const pnl = s.currentPnL ?? 0;
+  const el = document.getElementById("stat-pnl");
+  el.textContent = pnl !== 0 ? (pnl>0?"+":"")+"$"+pnl : "—";
+  el.className = "stat-value " + (pnl>0?"green":pnl<0?"red":"white");
+}
+
+function updateAgentUI() {
+  const btn=document.getElementById("toggle-btn"), st=document.getElementById("toggle-status");
+  const estop=document.getElementById("estop-btn"), panel=document.getElementById("control-panel");
+  if (agentEnabled) {
+    btn.className="toggle-btn on"; st.className="toggle-status on";
+    st.textContent="LIVE — scanning every "+currentInterval+"m";
+    estop.style.display="block"; panel.classList.add("active"); scheduleCountdown();
+  } else {
+    btn.className="toggle-btn off"; st.className="toggle-status off";
+    st.textContent="Off — manual only"; estop.style.display="none";
+    panel.classList.remove("active"); clearCountdown();
+  }
+  updateStatusBadge(); updateIntervalBtns();
+}
+
+function updateStatusBadge(override) {
+  const badge=document.getElementById("status-badge"), pulse=document.getElementById("pulse-container");
+  if (override==="OFFLINE") { badge.className="badge badge-gray"; badge.textContent="OFFLINE"; pulse.innerHTML='<span class="dot-off"></span>'; return; }
+  if (scanning) { badge.className="badge badge-blue"; badge.textContent="SCANNING"; pulse.innerHTML='<span class="pulse-wrap pulse-green"><span class="pulse-ring"></span><span class="pulse-dot"></span></span>'; }
+  else if (agentEnabled) { badge.className="badge badge-orange"; badge.textContent="AUTO"; pulse.innerHTML='<span class="pulse-wrap pulse-orange"><span class="pulse-ring"></span><span class="pulse-dot"></span></span>'; }
+  else { badge.className="badge badge-gray"; badge.textContent="IDLE"; pulse.innerHTML='<span class="dot-off"></span>'; }
+}
+
+function updateIntervalBtns() {
+  document.querySelectorAll(".interval-btn").forEach(b => b.classList.toggle("active", parseInt(b.dataset.mins)===currentInterval));
+}
+
+function scheduleCountdown() {
+  clearCountdown();
+  nextScanAt = Date.now() + currentInterval * 60000;
+  countdownTimer = setInterval(() => {
+    if (!agentEnabled) { clearCountdown(); return; }
+    const secs = Math.max(0, Math.round((nextScanAt - Date.now()) / 1000));
+    const m=String(Math.floor(secs/60)).padStart(2,"0"), s=String(secs%60).padStart(2,"0");
+    document.getElementById("countdown").textContent = "next "+m+":"+s;
+    if (secs===0) nextScanAt = Date.now() + currentInterval * 60000;
+  }, 500);
+}
+function clearCountdown() { clearInterval(countdownTimer); document.getElementById("countdown").textContent=""; }
+
+const ICONS = { agent:"🤖", trade:"⚡", error:"✗", warn:"⚠", info:"·", auto:"⏱" };
+function makeLogEl(e) {
+  const div=document.createElement("div"); div.className="log-entry "+(e.type||"info");
+  div.innerHTML=`<span class="log-time">${e.time}</span><span class="log-icon">${ICONS[e.type]||"·"}</span><span class="log-text">${esc(e.content)}</span>`;
+  return div;
+}
+function renderLogs() {
+  const area=document.getElementById("log-area");
+  if (!logs.length) { area.innerHTML='<div class="log-empty"><div class="icon">📡</div><div>No activity yet</div></div>'; return; }
+  area.innerHTML=""; logs.forEach(e=>area.appendChild(makeLogEl(e)));
+}
+function prependLog(entry) {
+  const area=document.getElementById("log-area");
+  const empty=area.querySelector(".log-empty"); if(empty) area.innerHTML="";
+  area.insertBefore(makeLogEl(entry), area.firstChild);
+}
+function renderTrades() {
+  const list=document.getElementById("trades-list");
+  if (!trades.length) { list.innerHTML='<div class="log-empty"><div class="icon">⚡</div><div>No trades yet</div></div>'; return; }
+  list.innerHTML=trades.map(t=>`<div class="trade-card"><div class="trade-card-header"><span class="badge badge-green">TRADE</span><span class="trade-card-time">${t.date} ${t.time}</span></div><div class="trade-card-body">${esc(t.summary)}</div></div>`).join("");
+}
+function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function toggleAgent() { await fetch(agentEnabled?"/api/agent/disable":"/api/agent/enable",{method:"POST"}); }
+async function setInterval_(m) { currentInterval=m; updateIntervalBtns(); if(agentEnabled)scheduleCountdown(); await fetch("/api/interval",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({minutes:m})}); }
+async function emergencyStop() { if(!confirm("Emergency stop?"))return; await fetch("/api/emergency-stop",{method:"POST"}); }
+async function manualScan() { await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); }
+async function closeAll() { if(!confirm("Close ALL open SPY positions?"))return; await fetch("/api/close-all",{method:"POST"}); }
+async function sendInstruction(msg) { await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({instruction:msg})}); }
+async function sendMsg() { const inp=document.getElementById("msg-input"),msg=inp.value.trim(); if(!msg)return; inp.value=""; await sendInstruction(msg); }
+function switchTab(n) {
+  document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+  document.getElementById("panel-"+n).classList.add("active");
+  document.getElementById("tab-"+n).classList.add("active");
+}
+connect();
+</script>
+</body>
+</html>
