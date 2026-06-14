@@ -4,194 +4,424 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#09090b" />
-  <title>SPY/0DTE Agent</title>
+  <meta name="theme-color" content="#0d0d0f" />
+  <title>SPY 0DTE Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-    body { background: #09090b; color: #e4e4e7; font-family: 'Courier New', monospace; font-size: 13px; min-height: 100vh; display: flex; flex-direction: column; }
-    .header { background: #09090b; border-bottom: 1px solid #27272a; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
-    .header-title { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: -0.3px; }
-    .header-sub { font-size: 10px; color: #52525b; margin-top: 1px; }
-    .header-right { display: flex; align-items: center; gap: 8px; }
-    .badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; border: 1px solid; text-transform: uppercase; }
-    .badge-gray   { background: rgba(63,63,70,.4);   color: #a1a1aa; border-color: #3f3f46; }
-    .badge-green  { background: rgba(16,185,129,.15); color: #6ee7b7; border-color: rgba(16,185,129,.3); }
-    .badge-red    { background: rgba(239,68,68,.15);  color: #fca5a5; border-color: rgba(239,68,68,.3); }
-    .badge-orange { background: rgba(249,115,22,.15); color: #fdba74; border-color: rgba(249,115,22,.3); }
-    .badge-blue   { background: rgba(59,130,246,.15); color: #93c5fd; border-color: rgba(59,130,246,.3); }
-    .pulse-wrap { position: relative; width: 8px; height: 8px; display: inline-flex; }
-    .pulse-ring { position: absolute; inset: 0; border-radius: 50%; animation: ping 1.2s cubic-bezier(0,0,.2,1) infinite; }
-    .pulse-dot  { position: relative; width: 8px; height: 8px; border-radius: 50%; }
-    .pulse-green .pulse-ring { background: #34d399; opacity: .7; }
-    .pulse-green .pulse-dot  { background: #10b981; }
-    .pulse-orange .pulse-ring { background: #fb923c; opacity: .7; }
-    .pulse-orange .pulse-dot  { background: #f97316; }
-    .dot-off { width: 8px; height: 8px; border-radius: 50%; background: #3f3f46; display: inline-block; }
-    @keyframes ping { 75%,100% { transform: scale(2); opacity: 0; } }
-    .control-panel { padding: 12px 16px; border-bottom: 1px solid #27272a; display: flex; flex-direction: column; gap: 10px; transition: background .2s; }
-    .control-panel.active { background: rgba(124,45,18,.15); border-bottom-color: rgba(154,52,18,.4); }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    :root {
+      --bg:       #0d0d0f;
+      --surface:  #141416;
+      --card:     #1a1a1e;
+      --border:   #242428;
+      --border2:  #2e2e34;
+      --muted:    #4a4a55;
+      --sub:      #6b6b78;
+      --text:     #e8e8f0;
+      --text2:    #b0b0be;
+      --green:    #22c55e;
+      --green-d:  rgba(34,197,94,.12);
+      --red:      #ef4444;
+      --red-d:    rgba(239,68,68,.12);
+      --blue:     #3b82f6;
+      --blue-d:   rgba(59,130,246,.12);
+      --orange:   #f97316;
+      --orange-d: rgba(249,115,22,.12);
+      --amber:    #f59e0b;
+    }
+
+    html, body { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .logo {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg, #1d4ed8, #7c3aed);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; flex-shrink: 0;
+    }
+    .header-title { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+    .header-sub { font-size: 11px; color: var(--sub); margin-top: 1px; }
+    .header-right { display: flex; align-items: center; gap: 10px; }
+
+    /* ── Status badge ── */
+    .status-pill {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+      border: 1px solid var(--border2);
+      background: var(--card);
+      color: var(--sub);
+    }
+    .status-pill.online { border-color: rgba(34,197,94,.3); background: var(--green-d); color: var(--green); }
+    .status-pill.scanning { border-color: rgba(59,130,246,.3); background: var(--blue-d); color: var(--blue); }
+    .status-pill.auto { border-color: rgba(249,115,22,.3); background: var(--orange-d); color: var(--orange); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    .dot.pulse { animation: pulse-dot 1.4s ease-in-out infinite; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    /* ── Control panel ── */
+    .control-panel {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .control-panel.active { background: rgba(249,115,22,.05); border-bottom-color: rgba(249,115,22,.2); }
+
     .toggle-row { display: flex; align-items: center; gap: 12px; }
-    .toggle-label { font-size: 11px; color: #71717a; text-transform: uppercase; letter-spacing: .08em; }
-    .toggle-status { font-size: 11px; }
-    .toggle-status.on  { color: #fb923c; }
-    .toggle-status.off { color: #52525b; }
-    .toggle-btn { width: 48px; height: 26px; border-radius: 13px; border: none; cursor: pointer; position: relative; transition: background .2s; }
-    .toggle-btn.on  { background: #ea580c; }
-    .toggle-btn.off { background: #3f3f46; }
-    .toggle-knob { position: absolute; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left .2s; }
-    .toggle-btn.on  .toggle-knob { left: 25px; }
-    .toggle-btn.off .toggle-knob { left: 3px; }
+    .toggle-label { font-size: 13px; font-weight: 500; color: var(--text2); }
+
+    /* Toggle switch */
+    .toggle-switch {
+      width: 44px; height: 24px; border-radius: 12px;
+      background: var(--border2); border: none; cursor: pointer;
+      position: relative; transition: background .2s; flex-shrink: 0;
+    }
+    .toggle-switch.on { background: var(--orange); }
+    .toggle-switch::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #fff; transition: left .2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+    .toggle-switch.on::after { left: 22px; }
+    .toggle-text { font-size: 13px; color: var(--sub); }
+    .toggle-text.on { color: var(--orange); font-weight: 500; }
+
+    .estop-btn {
+      margin-left: auto; padding: 5px 12px; border-radius: 6px;
+      border: 1px solid rgba(239,68,68,.4); background: rgba(239,68,68,.1);
+      color: var(--red); font-size: 12px; font-weight: 600;
+      cursor: pointer; font-family: inherit; display: none;
+      transition: background .15s;
+    }
+    .estop-btn:active { background: rgba(239,68,68,.2); }
+
     .interval-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .interval-label { font-size: 11px; color: #52525b; }
-    .interval-btn { padding: 4px 10px; border-radius: 4px; border: 1px solid #3f3f46; background: #18181b; color: #71717a; font-size: 11px; cursor: pointer; font-family: inherit; transition: all .15s; }
-    .interval-btn.active { background: rgba(124,45,18,.4); border-color: #c2410c; color: #fb923c; }
-    .countdown { font-size: 11px; color: #52525b; margin-left: auto; }
-    .actions { padding: 8px 16px; border-bottom: 1px solid #27272a; display: flex; gap: 6px; flex-wrap: wrap; }
-    .action-btn { padding: 6px 10px; border-radius: 4px; border: 1px solid #27272a; background: #18181b; color: #a1a1aa; font-size: 11px; cursor: pointer; font-family: inherit; transition: all .15s; white-space: nowrap; }
-    .action-btn:active { background: #27272a; }
-    .action-btn.danger { border-color: #7f1d1d; color: #fca5a5; background: rgba(127,29,29,.2); }
-    .action-btn.danger:active { background: rgba(127,29,29,.4); }
-    .stats-bar { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid #27272a; background: #0a0a0b; }
-    .stat { padding: 8px 12px; border-right: 1px solid #18181b; }
+    .interval-label { font-size: 12px; color: var(--sub); }
+    .int-btn {
+      padding: 4px 12px; border-radius: 6px;
+      border: 1px solid var(--border2); background: var(--card);
+      color: var(--sub); font-size: 12px; font-weight: 500;
+      cursor: pointer; font-family: inherit; transition: all .15s;
+    }
+    .int-btn.active {
+      background: var(--orange-d); border-color: rgba(249,115,22,.4);
+      color: var(--orange);
+    }
+    .countdown { font-size: 12px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+    /* ── Stats bar ── */
+    .stats-bar {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .stat { padding: 12px 16px; border-right: 1px solid var(--border); }
     .stat:last-child { border-right: none; }
-    .stat-label { font-size: 9px; color: #52525b; text-transform: uppercase; letter-spacing: .06em; }
-    .stat-value { font-size: 15px; font-weight: 700; margin-top: 2px; }
-    .stat-value.green { color: #34d399; } .stat-value.red { color: #f87171; } .stat-value.blue { color: #60a5fa; } .stat-value.white { color: #fff; }
-    .legend { padding: 5px 16px; border-bottom: 1px solid #18181b; font-size: 10px; color: #3f3f46; display: flex; gap: 8px; flex-wrap: wrap; }
-    .legend .window { color: #16a34a; font-weight: 600; }
-    .legend .close  { color: #7f1d1d; }
-    .log-area { flex: 1; overflow-y: auto; padding: 4px 0; }
-    .log-entry { display: flex; gap: 8px; padding: 4px 16px; line-height: 1.5; border-bottom: 1px solid #0f0f10; }
-    .log-entry:hover { background: rgba(255,255,255,.02); }
-    .log-time  { font-size: 10px; color: #3f3f46; min-width: 68px; padding-top: 1px; flex-shrink: 0; }
-    .log-icon  { flex-shrink: 0; }
-    .log-text  { flex: 1; word-break: break-word; white-space: pre-wrap; font-size: 12px; }
-    .log-entry.agent { color: #7dd3fc; } .log-entry.trade { color: #6ee7b7; } .log-entry.error { color: #fca5a5; }
-    .log-entry.warn  { color: #fcd34d; } .log-entry.info  { color: #71717a; } .log-entry.auto  { color: #fdba74; }
-    .log-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; color: #3f3f46; }
-    .log-empty .icon { font-size: 36px; margin-bottom: 8px; }
-    .input-bar { border-top: 1px solid #27272a; padding: 10px 16px; display: flex; gap: 8px; background: #09090b; }
-    .input-bar input { flex: 1; background: #18181b; border: 1px solid #3f3f46; border-radius: 6px; padding: 8px 10px; color: #e4e4e7; font-family: inherit; font-size: 12px; outline: none; }
-    .input-bar input:focus { border-color: #52525b; }
-    .input-bar input::placeholder { color: #3f3f46; }
-    .send-btn { padding: 8px 14px; border-radius: 6px; border: 1px solid #1e3a5f; background: rgba(30,58,95,.4); color: #93c5fd; font-size: 12px; font-family: inherit; cursor: pointer; }
-    .send-btn:disabled { opacity: .4; cursor: default; }
-    .tab-bar { display: flex; border-top: 1px solid #27272a; background: #09090b; }
-    .tab { flex: 1; padding: 10px 4px; text-align: center; font-size: 10px; color: #52525b; cursor: pointer; border-top: 2px solid transparent; transition: all .15s; }
-    .tab.active { color: #e4e4e7; border-top-color: #e4e4e7; }
-    .tab-icon { font-size: 16px; display: block; margin-bottom: 2px; }
-    .trades-list { flex: 1; overflow-y: auto; }
-    .trade-card { padding: 10px 16px; border-bottom: 1px solid #18181b; }
-    .trade-card-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
-    .trade-card-time { font-size: 10px; color: #52525b; }
-    .trade-card-body { font-size: 11px; color: #a1a1aa; line-height: 1.5; }
+    .stat-label { font-size: 10px; font-weight: 500; color: var(--sub); text-transform: uppercase; letter-spacing: .08em; }
+    .stat-value { font-size: 22px; font-weight: 700; margin-top: 2px; color: var(--text); font-variant-numeric: tabular-nums; }
+    .stat-value.green { color: var(--green); }
+    .stat-value.red   { color: var(--red); }
+    .stat-value.blue  { color: var(--blue); }
+
+    /* ── Actions ── */
+    .actions {
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex; gap: 8px; flex-wrap: wrap;
+      background: var(--surface);
+    }
+    .act-btn {
+      padding: 7px 14px; border-radius: 7px;
+      border: 1px solid var(--border2); background: var(--card);
+      color: var(--text2); font-size: 13px; font-weight: 500;
+      cursor: pointer; font-family: inherit;
+      transition: all .15s; display: flex; align-items: center; gap: 6px;
+    }
+    .act-btn:hover { background: var(--border); color: var(--text); }
+    .act-btn.danger {
+      border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.07);
+      color: var(--red);
+    }
+    .act-btn.danger:hover { background: rgba(239,68,68,.14); }
+
+    /* ── Legend ── */
+    .legend {
+      padding: 7px 18px; background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      font-size: 11px; color: var(--muted);
+      display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    }
+    .legend .window { color: var(--green); font-weight: 600; }
+    .legend .close-time { color: var(--red); }
+    .legend-sep { color: var(--border2); }
+
+    /* ── Panels ── */
     .panel { display: none; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
     .panel.active { display: flex; }
-    /* Account tab */
-    .acct-scroll { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 14px; }
-    .acct-section-title { font-size: 10px; color: #52525b; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+
+    /* ── Log ── */
+    .log-area { flex: 1; overflow-y: auto; }
+    .log-entry {
+      display: flex; gap: 10px;
+      padding: 8px 18px;
+      border-bottom: 1px solid rgba(255,255,255,.03);
+      line-height: 1.5;
+    }
+    .log-entry:hover { background: rgba(255,255,255,.02); }
+    .log-time  { font-size: 11px; color: var(--muted); min-width: 70px; padding-top: 1px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    .log-icon  { flex-shrink: 0; font-size: 13px; padding-top: 1px; }
+    .log-text  { flex: 1; word-break: break-word; white-space: pre-wrap; font-size: 13px; color: var(--text2); }
+    .log-entry.agent .log-text { color: #7dd3fc; }
+    .log-entry.trade .log-text { color: var(--green); }
+    .log-entry.error .log-text { color: var(--red); }
+    .log-entry.warn  .log-text { color: var(--amber); }
+    .log-entry.info  .log-text { color: var(--sub); }
+    .log-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; gap: 8px; color: var(--muted); }
+    .log-empty .icon { font-size: 32px; }
+    .log-empty .label { font-size: 13px; }
+
+    .input-bar {
+      border-top: 1px solid var(--border);
+      padding: 12px 18px;
+      display: flex; gap: 8px;
+      background: var(--surface);
+    }
+    .input-bar input {
+      flex: 1; background: var(--card);
+      border: 1px solid var(--border2); border-radius: 8px;
+      padding: 9px 12px; color: var(--text);
+      font-family: inherit; font-size: 13px; outline: none;
+      transition: border-color .15s;
+    }
+    .input-bar input:focus { border-color: var(--blue); }
+    .input-bar input::placeholder { color: var(--muted); }
+    .send-btn {
+      padding: 9px 16px; border-radius: 8px;
+      border: 1px solid rgba(59,130,246,.4); background: rgba(59,130,246,.12);
+      color: var(--blue); font-size: 13px; font-weight: 500;
+      font-family: inherit; cursor: pointer; transition: all .15s;
+    }
+    .send-btn:hover { background: rgba(59,130,246,.2); }
+    .send-btn:disabled { opacity: .4; cursor: default; }
+
+    /* ── Trades ── */
+    .trades-list { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .trade-card {
+      background: var(--card); border: 1px solid var(--border2); border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .trade-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .trade-chip {
+      font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px;
+      background: var(--green-d); color: var(--green); border: 1px solid rgba(34,197,94,.25);
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+    .trade-card-time { font-size: 11px; color: var(--sub); }
+    .trade-card-body { font-size: 12px; color: var(--text2); line-height: 1.6; }
+
+    /* ── Account tab ── */
+    .acct-scroll { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .section-title { font-size: 11px; font-weight: 600; color: var(--sub); text-transform: uppercase; letter-spacing: .1em; }
+
     .acct-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-    .acct-card { background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 10px 10px 8px; }
-    .acct-card-label { font-size: 9px; color: #52525b; text-transform: uppercase; letter-spacing: .06em; }
-    .acct-card-value { font-size: 16px; font-weight: 700; margin-top: 3px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .acct-card-value.green { color: #34d399; }
-    .acct-card-value.red   { color: #f87171; }
-    .acct-card-value.blue  { color: #60a5fa; }
-    .pos-card { background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 10px 12px; }
-    .pos-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-    .pos-name { font-size: 13px; font-weight: 700; color: #fff; }
-    .pos-pnl { font-size: 14px; font-weight: 700; }
-    .pos-pnl.green { color: #34d399; }
-    .pos-pnl.red   { color: #f87171; }
-    .pos-detail { display: flex; gap: 16px; font-size: 10px; color: #71717a; flex-wrap: wrap; }
-    .pos-detail span b { color: #a1a1aa; }
-    .pos-empty { text-align: center; padding: 24px; color: #3f3f46; font-size: 12px; }
-    .acct-refresh { display: flex; align-items: center; justify-content: space-between; }
-    .refresh-btn { padding: 5px 10px; border-radius: 4px; border: 1px solid #27272a; background: #18181b; color: #71717a; font-size: 11px; cursor: pointer; font-family: inherit; }
-    .refresh-btn:active { background: #27272a; }
-    .refresh-time { font-size: 10px; color: #3f3f46; }
+    .acct-card {
+      background: var(--card); border: 1px solid var(--border2); border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .acct-card-label { font-size: 10px; font-weight: 500; color: var(--sub); text-transform: uppercase; letter-spacing: .06em; }
+    .acct-card-value { font-size: 18px; font-weight: 700; margin-top: 4px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+    .acct-card-value.green { color: var(--green); }
+    .acct-card-value.red   { color: var(--red); }
+    .acct-card-value.blue  { color: var(--blue); }
+
     .perf-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+
+    .pos-card {
+      background: var(--card); border: 1px solid var(--border2); border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .pos-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .pos-name { font-size: 14px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; }
+    .pos-pnl { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .pos-pnl.green { color: var(--green); }
+    .pos-pnl.red   { color: var(--red); }
+    .pos-detail { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--sub); }
+    .pos-detail span b { color: var(--text2); font-weight: 500; }
+    .pos-empty { text-align: center; padding: 28px; color: var(--muted); font-size: 13px; }
+
+    .refresh-btn {
+      padding: 5px 10px; border-radius: 6px;
+      border: 1px solid var(--border2); background: var(--card);
+      color: var(--sub); font-size: 12px; cursor: pointer; font-family: inherit;
+      transition: all .15s;
+    }
+    .refresh-btn:hover { background: var(--border); color: var(--text2); }
+    .refresh-time { font-size: 11px; color: var(--muted); }
+
+    /* ── Chip/badge inline ── */
+    .chip {
+      font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: .04em;
+      display: inline-block;
+    }
+    .chip-green { background: var(--green-d); color: var(--green); border: 1px solid rgba(34,197,94,.25); }
+    .chip-red   { background: var(--red-d);   color: var(--red);   border: 1px solid rgba(239,68,68,.25); }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      display: flex; border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .tab {
+      flex: 1; padding: 11px 4px; text-align: center;
+      font-size: 11px; font-weight: 500; color: var(--muted);
+      cursor: pointer; border-top: 2px solid transparent;
+      transition: all .15s; letter-spacing: .02em;
+    }
+    .tab.active { color: var(--text); border-top-color: var(--blue); }
+    .tab-icon { font-size: 17px; display: block; margin-bottom: 2px; }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
   </style>
 </head>
 <body>
 
+<!-- Header -->
 <div class="header">
-  <div>
-    <div class="header-title">SPY / 0DTE</div>
-    <div class="header-sub" id="acct-label">Connecting…</div>
+  <div class="header-left">
+    <div class="logo">📈</div>
+    <div>
+      <div class="header-title">SPY 0DTE</div>
+      <div class="header-sub" id="acct-label">Connecting…</div>
+    </div>
   </div>
   <div class="header-right">
-    <div id="pulse-container"><span class="dot-off"></span></div>
-    <span id="status-badge" class="badge badge-gray">OFFLINE</span>
+    <div class="status-pill" id="status-pill">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">OFFLINE</span>
+    </div>
   </div>
 </div>
 
+<!-- Control Panel -->
 <div class="control-panel" id="control-panel">
   <div class="toggle-row">
-    <span class="toggle-label">Auto Mode</span>
-    <button class="toggle-btn off" id="toggle-btn" onclick="toggleAgent()">
-      <span class="toggle-knob"></span>
-    </button>
-    <span class="toggle-status off" id="toggle-status">Off — manual only</span>
-    <button class="action-btn danger" id="estop-btn" onclick="emergencyStop()" style="display:none;margin-left:auto;">🛑 E-STOP</button>
+    <span class="toggle-label">Auto Trading</span>
+    <button class="toggle-switch off" id="toggle-btn" onclick="toggleAgent()"></button>
+    <span class="toggle-text off" id="toggle-status">Off</span>
+    <button class="estop-btn" id="estop-btn" onclick="emergencyStop()">⛔ Stop</button>
   </div>
   <div class="interval-row">
-    <span class="interval-label">Every</span>
-    <button class="interval-btn" data-mins="5"  onclick="setInterval_(5)">5m</button>
-    <button class="interval-btn" data-mins="10" onclick="setInterval_(10)">10m</button>
-    <button class="interval-btn" data-mins="15" onclick="setInterval_(15)">15m</button>
-    <button class="interval-btn" data-mins="30" onclick="setInterval_(30)">30m</button>
+    <span class="interval-label">Scan every</span>
+    <button class="int-btn" data-mins="5"  onclick="setInterval_(5)">5m</button>
+    <button class="int-btn" data-mins="10" onclick="setInterval_(10)">10m</button>
+    <button class="int-btn" data-mins="15" onclick="setInterval_(15)">15m</button>
+    <button class="int-btn" data-mins="30" onclick="setInterval_(30)">30m</button>
     <span class="countdown" id="countdown"></span>
   </div>
 </div>
 
+<!-- Stats -->
 <div class="stats-bar">
-  <div class="stat"><div class="stat-label">Scans</div><div class="stat-value white" id="stat-scans">—</div></div>
-  <div class="stat"><div class="stat-label">Trades</div><div class="stat-value blue" id="stat-trades">—</div></div>
-  <div class="stat"><div class="stat-label">P&amp;L</div><div class="stat-value white" id="stat-pnl">—</div></div>
+  <div class="stat">
+    <div class="stat-label">Scans</div>
+    <div class="stat-value" id="stat-scans">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Trades</div>
+    <div class="stat-value blue" id="stat-trades">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">P&amp;L</div>
+    <div class="stat-value" id="stat-pnl">—</div>
+  </div>
 </div>
 
+<!-- Actions -->
 <div class="actions">
-  <button class="action-btn" onclick="manualScan()">📊 Scan</button>
-  <button class="action-btn" onclick="sendInstruction('Show all open SPY option positions and current P&amp;L.')">📋 Positions</button>
-  <button class="action-btn danger" onclick="closeAll()">🔒 Close All</button>
-  <button class="action-btn" onclick="sendInstruction('Show buying power and portfolio summary.')">💰 Account</button>
+  <button class="act-btn" onclick="manualScan()">📊 Scan Now</button>
+  <button class="act-btn" onclick="sendInstruction('Show all open SPY option positions and current P&L.')">📋 Positions</button>
+  <button class="act-btn" onclick="sendInstruction('Show buying power and portfolio summary.')">💰 Account</button>
+  <button class="act-btn danger" onclick="closeAll()">🔒 Close All</button>
 </div>
 
+<!-- Legend -->
 <div class="legend">
-  <span class="window">9:35–11:00 TRADE WINDOW</span>
-  <span>·</span><span>VIX 16–35</span>
-  <span>·</span><span>SPY &gt;0.4%</span>
-  <span>·</span><span class="close">3:45+ close all</span>
+  <span class="window">9:35–11:00 AM</span>
+  <span class="legend-sep">·</span>
+  <span>VIX 16–35</span>
+  <span class="legend-sep">·</span>
+  <span>SPY &gt;0.4% move</span>
+  <span class="legend-sep">·</span>
+  <span class="close-time">Close all 3:45 PM</span>
 </div>
 
+<!-- Log Panel -->
 <div class="panel active" id="panel-log">
   <div class="log-area" id="log-area">
-    <div class="log-empty"><div class="icon">📡</div><div>Connecting…</div></div>
+    <div class="log-empty"><div class="icon">📡</div><div class="label">Connecting…</div></div>
   </div>
   <div class="input-bar">
-    <input id="msg-input" placeholder="Override instruction…" onkeydown="if(event.key==='Enter')sendMsg()" />
+    <input id="msg-input" placeholder="Send instruction to agent…" onkeydown="if(event.key==='Enter')sendMsg()" />
     <button class="send-btn" onclick="sendMsg()">Send</button>
   </div>
 </div>
 
+<!-- Trades Panel -->
 <div class="panel" id="panel-trades">
   <div class="trades-list" id="trades-list">
-    <div class="log-empty"><div class="icon">⚡</div><div>No trades yet</div></div>
+    <div class="log-empty"><div class="icon">⚡</div><div class="label">No trades yet</div></div>
   </div>
 </div>
 
+<!-- Account Panel -->
 <div class="panel" id="panel-account">
   <div class="acct-scroll">
     <div>
-      <div class="acct-refresh">
-        <div class="acct-section-title">💰 Account Summary</div>
+      <div class="section-header">
+        <div class="section-title">Account Summary</div>
         <div style="display:flex;align-items:center;gap:8px;">
           <span class="refresh-time" id="acct-refresh-time">—</span>
           <button class="refresh-btn" onclick="fetchAccount(true)">↻ Refresh</button>
         </div>
       </div>
-      <div class="acct-cards" style="margin-top:6px;">
+      <div class="acct-cards">
         <div class="acct-card"><div class="acct-card-label">Buying Power</div><div class="acct-card-value" id="acct-buying-power">—</div></div>
         <div class="acct-card"><div class="acct-card-label">Portfolio</div><div class="acct-card-value blue" id="acct-portfolio">—</div></div>
         <div class="acct-card"><div class="acct-card-label">Today P&amp;L</div><div class="acct-card-value" id="acct-today-pnl">—</div></div>
@@ -199,22 +429,23 @@
     </div>
 
     <div>
-      <div class="acct-section-title">📋 Open Positions</div>
+      <div class="section-header"><div class="section-title">Open Positions</div></div>
       <div id="acct-positions"><div class="pos-empty">Loading…</div></div>
     </div>
 
     <div>
-      <div class="acct-section-title">📈 Performance</div>
+      <div class="section-header"><div class="section-title">Performance</div></div>
       <div class="perf-cards">
         <div class="acct-card"><div class="acct-card-label">Win Rate</div><div class="acct-card-value green" id="perf-winrate">—</div></div>
         <div class="acct-card"><div class="acct-card-label">All-time P&amp;L</div><div class="acct-card-value" id="perf-alltime-pnl">—</div></div>
-        <div class="acct-card"><div class="acct-card-label">Total Trades</div><div class="acct-card-value white" id="perf-trades">—</div></div>
-        <div class="acct-card"><div class="acct-card-label">Total Scans</div><div class="acct-card-value white" id="perf-scans">—</div></div>
+        <div class="acct-card"><div class="acct-card-label">Total Trades</div><div class="acct-card-value" id="perf-trades">—</div></div>
+        <div class="acct-card"><div class="acct-card-label">Total Scans</div><div class="acct-card-value" id="perf-scans">—</div></div>
       </div>
     </div>
   </div>
 </div>
 
+<!-- Tab Bar -->
 <div class="tab-bar">
   <div class="tab active" id="tab-log" onclick="switchTab('log')"><span class="tab-icon">📟</span>Live Log</div>
   <div class="tab" id="tab-trades" onclick="switchTab('trades')"><span class="tab-icon">⚡</span>Trades</div>
@@ -225,7 +456,7 @@
 let agentEnabled = false, scanning = false, currentInterval = 10;
 let nextScanAt = null, countdownTimer = null;
 let logs = [], trades = [];
-const ACCOUNT = "5UV19627";
+const ACCOUNT = "545721409";
 
 function connect() {
   const es = new EventSource("/api/stream");
@@ -234,16 +465,16 @@ function connect() {
     logs = d.logs || []; trades = d.trades || [];
     agentEnabled = d.enabled; currentInterval = d.interval || 10; scanning = d.scanning;
     updateStats(d.stats); updateAgentUI(); renderLogs(); renderTrades();
-    document.getElementById("acct-label").textContent = "ACCT " + ACCOUNT + " · ROBINHOOD";
+    document.getElementById("acct-label").textContent = "Agentic · " + ACCOUNT + " · Robinhood";
   });
   es.addEventListener("log",   e => { const entry = JSON.parse(e.data); logs.unshift(entry); if(logs.length>200)logs.pop(); prependLog(entry); });
   es.addEventListener("trade", e => { trades.unshift(JSON.parse(e.data)); renderTrades(); });
   es.addEventListener("stats",    e => updateStats(JSON.parse(e.data)));
   es.addEventListener("enabled",  e => { agentEnabled = JSON.parse(e.data); updateAgentUI(); });
   es.addEventListener("interval", e => { currentInterval = JSON.parse(e.data); updateIntervalBtns(); });
-  es.addEventListener("status",   e => { scanning = JSON.parse(e.data).scanning; updateStatusBadge(); if(scanning) nextScanAt=null; });
-  es.addEventListener("emergency",() => { agentEnabled=false; updateAgentUI(); alert("🛑 Emergency stop triggered"); });
-  es.onerror = () => { updateStatusBadge("OFFLINE"); setTimeout(connect, 3000); };
+  es.addEventListener("status",   e => { scanning = JSON.parse(e.data).scanning; updateStatusPill(); if(scanning) nextScanAt=null; });
+  es.addEventListener("emergency",() => { agentEnabled=false; updateAgentUI(); alert("⛔ Emergency stop triggered"); });
+  es.onerror = () => { updateStatusPill("offline"); setTimeout(connect, 3000); };
 }
 
 function updateStats(s) {
@@ -252,35 +483,54 @@ function updateStats(s) {
   document.getElementById("stat-trades").textContent = s.totalTrades ?? "—";
   const pnl = s.currentPnL ?? 0;
   const el = document.getElementById("stat-pnl");
-  el.textContent = pnl !== 0 ? (pnl>0?"+":"")+"$"+pnl : "—";
-  el.className = "stat-value " + (pnl>0?"green":pnl<0?"red":"white");
+  el.textContent = pnl !== 0 ? (pnl > 0 ? "+" : "") + "$" + Math.abs(pnl).toFixed(0) : "—";
+  el.className = "stat-value " + (pnl > 0 ? "green" : pnl < 0 ? "red" : "");
 }
 
 function updateAgentUI() {
-  const btn=document.getElementById("toggle-btn"), st=document.getElementById("toggle-status");
-  const estop=document.getElementById("estop-btn"), panel=document.getElementById("control-panel");
+  const btn = document.getElementById("toggle-btn");
+  const st  = document.getElementById("toggle-status");
+  const estop = document.getElementById("estop-btn");
+  const panel = document.getElementById("control-panel");
   if (agentEnabled) {
-    btn.className="toggle-btn on"; st.className="toggle-status on";
-    st.textContent="LIVE — scanning every "+currentInterval+"m";
-    estop.style.display="block"; panel.classList.add("active"); scheduleCountdown();
+    btn.className = "toggle-switch on";
+    st.className  = "toggle-text on";
+    st.textContent = "Live — every " + currentInterval + "m";
+    estop.style.display = "block";
+    panel.classList.add("active");
+    scheduleCountdown();
   } else {
-    btn.className="toggle-btn off"; st.className="toggle-status off";
-    st.textContent="Off — manual only"; estop.style.display="none";
-    panel.classList.remove("active"); clearCountdown();
+    btn.className = "toggle-switch off";
+    st.className  = "toggle-text off";
+    st.textContent = "Off";
+    estop.style.display = "none";
+    panel.classList.remove("active");
+    clearCountdown();
   }
-  updateStatusBadge(); updateIntervalBtns();
+  updateStatusPill();
+  updateIntervalBtns();
 }
 
-function updateStatusBadge(override) {
-  const badge=document.getElementById("status-badge"), pulse=document.getElementById("pulse-container");
-  if (override==="OFFLINE") { badge.className="badge badge-gray"; badge.textContent="OFFLINE"; pulse.innerHTML='<span class="dot-off"></span>'; return; }
-  if (scanning) { badge.className="badge badge-blue"; badge.textContent="SCANNING"; pulse.innerHTML='<span class="pulse-wrap pulse-green"><span class="pulse-ring"></span><span class="pulse-dot"></span></span>'; }
-  else if (agentEnabled) { badge.className="badge badge-orange"; badge.textContent="AUTO"; pulse.innerHTML='<span class="pulse-wrap pulse-orange"><span class="pulse-ring"></span><span class="pulse-dot"></span></span>'; }
-  else { badge.className="badge badge-gray"; badge.textContent="IDLE"; pulse.innerHTML='<span class="dot-off"></span>'; }
+function updateStatusPill(override) {
+  const pill = document.getElementById("status-pill");
+  const dot  = document.getElementById("status-dot");
+  const txt  = document.getElementById("status-text");
+  dot.classList.remove("pulse");
+  if (override === "offline") {
+    pill.className = "status-pill"; txt.textContent = "OFFLINE"; return;
+  }
+  if (scanning) {
+    pill.className = "status-pill scanning"; txt.textContent = "SCANNING"; dot.classList.add("pulse");
+  } else if (agentEnabled) {
+    pill.className = "status-pill auto"; txt.textContent = "AUTO"; dot.classList.add("pulse");
+  } else {
+    pill.className = "status-pill online"; txt.textContent = "IDLE";
+  }
 }
 
 function updateIntervalBtns() {
-  document.querySelectorAll(".interval-btn").forEach(b => b.classList.toggle("active", parseInt(b.dataset.mins)===currentInterval));
+  document.querySelectorAll(".int-btn").forEach(b =>
+    b.classList.toggle("active", parseInt(b.dataset.mins) === currentInterval));
 }
 
 function scheduleCountdown() {
@@ -289,54 +539,71 @@ function scheduleCountdown() {
   countdownTimer = setInterval(() => {
     if (!agentEnabled) { clearCountdown(); return; }
     const secs = Math.max(0, Math.round((nextScanAt - Date.now()) / 1000));
-    const m=String(Math.floor(secs/60)).padStart(2,"0"), s=String(secs%60).padStart(2,"0");
-    document.getElementById("countdown").textContent = "next "+m+":"+s;
-    if (secs===0) nextScanAt = Date.now() + currentInterval * 60000;
+    const m = String(Math.floor(secs / 60)).padStart(2, "0");
+    const s = String(secs % 60).padStart(2, "0");
+    document.getElementById("countdown").textContent = "next " + m + ":" + s;
+    if (secs === 0) nextScanAt = Date.now() + currentInterval * 60000;
   }, 500);
 }
-function clearCountdown() { clearInterval(countdownTimer); document.getElementById("countdown").textContent=""; }
+function clearCountdown() {
+  clearInterval(countdownTimer);
+  document.getElementById("countdown").textContent = "";
+}
 
-const ICONS = { agent:"🤖", trade:"⚡", error:"✗", warn:"⚠", info:"·", auto:"⏱" };
+const ICONS = { agent: "🤖", trade: "⚡", error: "✕", warn: "⚠", info: "·", auto: "⏱" };
 function makeLogEl(e) {
-  const div=document.createElement("div"); div.className="log-entry "+(e.type||"info");
-  div.innerHTML=`<span class="log-time">${e.time}</span><span class="log-icon">${ICONS[e.type]||"·"}</span><span class="log-text">${esc(e.content)}</span>`;
+  const div = document.createElement("div");
+  div.className = "log-entry " + (e.type || "info");
+  div.innerHTML = `<span class="log-time">${e.time}</span><span class="log-icon">${ICONS[e.type] || "·"}</span><span class="log-text">${esc(e.content)}</span>`;
   return div;
 }
 function renderLogs() {
-  const area=document.getElementById("log-area");
-  if (!logs.length) { area.innerHTML='<div class="log-empty"><div class="icon">📡</div><div>No activity yet</div></div>'; return; }
-  area.innerHTML=""; logs.forEach(e=>area.appendChild(makeLogEl(e)));
+  const area = document.getElementById("log-area");
+  if (!logs.length) { area.innerHTML = '<div class="log-empty"><div class="icon">📡</div><div class="label">No activity yet</div></div>'; return; }
+  area.innerHTML = "";
+  logs.forEach(e => area.appendChild(makeLogEl(e)));
 }
 function prependLog(entry) {
-  const area=document.getElementById("log-area");
-  const empty=area.querySelector(".log-empty"); if(empty) area.innerHTML="";
+  const area = document.getElementById("log-area");
+  const empty = area.querySelector(".log-empty");
+  if (empty) area.innerHTML = "";
   area.insertBefore(makeLogEl(entry), area.firstChild);
 }
 function renderTrades() {
-  const list=document.getElementById("trades-list");
-  if (!trades.length) { list.innerHTML='<div class="log-empty"><div class="icon">⚡</div><div>No trades yet</div></div>'; return; }
-  list.innerHTML=trades.map(t=>`<div class="trade-card"><div class="trade-card-header"><span class="badge badge-green">TRADE</span><span class="trade-card-time">${t.date} ${t.time}</span></div><div class="trade-card-body">${esc(t.summary)}</div></div>`).join("");
+  const list = document.getElementById("trades-list");
+  if (!trades.length) { list.innerHTML = '<div class="log-empty"><div class="icon">⚡</div><div class="label">No trades yet</div></div>'; return; }
+  list.innerHTML = trades.map(t => `
+    <div class="trade-card">
+      <div class="trade-card-header">
+        <span class="trade-chip">Trade</span>
+        <span class="trade-card-time">${t.date} ${t.time}</span>
+      </div>
+      <div class="trade-card-body">${esc(t.summary)}</div>
+    </div>`).join("");
 }
-function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
 
-async function toggleAgent() { await fetch(agentEnabled?"/api/agent/disable":"/api/agent/enable",{method:"POST"}); }
-async function setInterval_(m) { currentInterval=m; updateIntervalBtns(); if(agentEnabled)scheduleCountdown(); await fetch("/api/interval",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({minutes:m})}); }
-async function emergencyStop() { if(!confirm("Emergency stop?"))return; await fetch("/api/emergency-stop",{method:"POST"}); }
-async function manualScan() { await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); }
-async function closeAll() { if(!confirm("Close ALL open SPY positions?"))return; await fetch("/api/close-all",{method:"POST"}); }
-async function sendInstruction(msg) { await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({instruction:msg})}); }
-async function sendMsg() { const inp=document.getElementById("msg-input"),msg=inp.value.trim(); if(!msg)return; inp.value=""; await sendInstruction(msg); }
+async function toggleAgent() { await fetch(agentEnabled ? "/api/agent/disable" : "/api/agent/enable", { method: "POST" }); }
+async function setInterval_(m) { currentInterval = m; updateIntervalBtns(); if (agentEnabled) scheduleCountdown(); await fetch("/api/interval", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: m }) }); }
+async function emergencyStop() { if (!confirm("Trigger emergency stop?")) return; await fetch("/api/emergency-stop", { method: "POST" }); }
+async function manualScan() { await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); }
+async function closeAll() { if (!confirm("Close ALL open SPY positions now?")) return; await fetch("/api/close-all", { method: "POST" }); }
+async function sendInstruction(msg) { await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction: msg }) }); }
+async function sendMsg() { const inp = document.getElementById("msg-input"), msg = inp.value.trim(); if (!msg) return; inp.value = ""; await sendInstruction(msg); }
+
 function switchTab(n) {
-  document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));
-  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
-  document.getElementById("panel-"+n).classList.add("active");
-  document.getElementById("tab-"+n).classList.add("active");
+  document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.getElementById("panel-" + n).classList.add("active");
+  document.getElementById("tab-" + n).classList.add("active");
   if (n === "account") fetchAccount();
 }
 
-// ── Account tab ───────────────────────────────────────────────────────────────
+// Account tab
 let acctLoading = false;
-function fmt$(n) { return n == null ? "—" : "$" + Number(n).toLocaleString("en-US", {minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmt$(n) { return n == null ? "—" : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function fmtPct(n) { return n == null ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(1) + "%"; }
 
 async function fetchAccount(force = false) {
@@ -348,7 +615,7 @@ async function fetchAccount(force = false) {
     const d = await fetch(url).then(r => r.json());
     if (d.error) throw new Error(d.error);
     renderAccount(d);
-    document.getElementById("acct-refresh-time").textContent = "Updated " + new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"});
+    document.getElementById("acct-refresh-time").textContent = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
   } catch (e) {
     document.getElementById("acct-refresh-time").textContent = "Error: " + e.message;
   } finally {
@@ -357,19 +624,15 @@ async function fetchAccount(force = false) {
 }
 
 function renderAccount(d) {
-  // Summary cards
-  document.getElementById("acct-buying-power").textContent = fmt$(d.buying_power);
+  document.getElementById("acct-buying-power").textContent = fmt$(d.buyingPower ?? d.buying_power);
 
-  const portEl = document.getElementById("acct-portfolio");
-  portEl.textContent = fmt$(d.portfolio_value);
+  document.getElementById("acct-portfolio").textContent = fmt$(d.portfolioValue ?? d.portfolio_value);
 
-  // Today P&L from stats (tracked by agent)
-  const pnl = d.stats?.currentPnL ?? null;
+  const pnl = d.totalPnl ?? d.stats?.currentPnL ?? null;
   const pnlEl = document.getElementById("acct-today-pnl");
   pnlEl.textContent = pnl != null ? (pnl >= 0 ? "+" : "") + fmt$(pnl) : "—";
-  pnlEl.className = "acct-card-value " + (pnl > 0 ? "green" : pnl < 0 ? "red" : "white");
+  pnlEl.className = "acct-card-value " + (pnl > 0 ? "green" : pnl < 0 ? "red" : "");
 
-  // Positions
   const posEl = document.getElementById("acct-positions");
   const positions = d.positions || [];
   if (!positions.length) {
@@ -380,10 +643,10 @@ function renderAccount(d) {
       const pnlPct = p.pnl_pct ?? null;
       const pnlCls = pnlPct == null ? "" : pnlPct >= 0 ? "green" : "red";
       const strike = p.strike ? "$" + p.strike : "—";
-      const expiry = p.expiry ? p.expiry.replace(/^\d{4}-/, "") : "—"; // show MM-DD
+      const expiry = p.expiry ? p.expiry.replace(/^\d{4}-/, "") : "—";
       return `<div class="pos-card">
         <div class="pos-header">
-          <div class="pos-name">SPY ${strike} <span class="badge ${side==="CALL"?"badge-green":"badge-red"}">${side}</span> ${expiry}</div>
+          <div class="pos-name">SPY ${strike} <span class="chip ${side==="CALL"?"chip-green":"chip-red"}">${side}</span> ${expiry}</div>
           <div class="pos-pnl ${pnlCls}">${fmtPct(pnlPct)}</div>
         </div>
         <div class="pos-detail">
@@ -396,20 +659,19 @@ function renderAccount(d) {
     }).join("");
   }
 
-  // Performance
   const s = d.stats || {};
   const wr = s.winRate;
   const wrEl = document.getElementById("perf-winrate");
   wrEl.textContent = wr != null ? wr + "%" : "—";
-  wrEl.className = "acct-card-value " + (wr >= 50 ? "green" : wr != null ? "red" : "white");
+  wrEl.className = "acct-card-value " + (wr >= 50 ? "green" : wr != null ? "red" : "");
 
   const allPnl = s.currentPnL ?? null;
   const allPnlEl = document.getElementById("perf-alltime-pnl");
   allPnlEl.textContent = allPnl != null ? (allPnl >= 0 ? "+" : "") + fmt$(allPnl) : "—";
-  allPnlEl.className = "acct-card-value " + (allPnl > 0 ? "green" : allPnl < 0 ? "red" : "white");
+  allPnlEl.className = "acct-card-value " + (allPnl > 0 ? "green" : allPnl < 0 ? "red" : "");
 
   document.getElementById("perf-trades").textContent = s.totalTrades ?? "—";
-  document.getElementById("perf-scans").textContent = s.totalScans ?? "—";
+  document.getElementById("perf-scans").textContent  = s.totalScans  ?? "—";
 }
 
 connect();
