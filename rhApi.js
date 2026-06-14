@@ -12,26 +12,55 @@ const DEVICE_TOKEN =
   process.env.ROBINHOOD_DEVICE_TOKEN || "a3244b17-5aab-4c8e-9e4d-2b4f3a8ecb4a";
 
 const UA = "Robinhood/823 (iPhone; iOS 7.1.2; Scale/2.00)";
+const TIMEOUT_MS = 12000; // 12s max per request
 
 let _token = null;
 let _tokenExpiry = 0;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function fetchWithTimeout(url, opts = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
+
+// In-memory refresh token (seeded from env var, updated after each refresh)
+let _refreshToken = process.env.ROBINHOOD_REFRESH_TOKEN || null;
 
 export async function getRHToken() { return getToken(); }
 
 async function getToken() {
   if (_token && Date.now() < _tokenExpiry) return _token;
 
-  const resp = await fetch(`${RH_BASE}/oauth2/token/`, {
+  // 1. Try refresh token (long-lived, set once, never expires manually)
+  if (_refreshToken) {
+    return refreshAccessToken();
+  }
+
+  // 2. Fall back to pre-set access token from env (first boot before refresh kicks in)
+  if (process.env.ROBINHOOD_TOKEN) {
+    _token = process.env.ROBINHOOD_TOKEN;
+    _tokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
+    return _token;
+  }
+
+  throw new Error(
+    "No Robinhood credentials found. Run get-rh-token.mjs locally and set " +
+    "ROBINHOOD_TOKEN and ROBINHOOD_REFRESH_TOKEN on Render."
+  );
+}
+
+async function refreshAccessToken() {
+  const resp = await fetchWithTimeout(`${RH_BASE}/oauth2/token/`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": UA },
     body: JSON.stringify({
-      username: process.env.ROBINHOOD_USERNAME,
-      password: process.env.ROBINHOOD_PASSWORD,
-      grant_type: "password",
+      grant_type: "refresh_token",
+      refresh_token: _refreshToken,
       client_id: CLIENT_ID,
-      expires_in: 86400,
       scope: "internal",
       device_token: DEVICE_TOKEN,
     }),
@@ -39,20 +68,17 @@ async function getToken() {
 
   const data = await resp.json();
 
-  if (data.mfa_required) {
+  if (!data.access_token) {
     throw new Error(
-      "Robinhood requires MFA but no ROBINHOOD_MFA_SECRET is configured. " +
-      "Enable MFA support or disable MFA on your Robinhood account."
+      `Robinhood token refresh failed: ${JSON.stringify(data)}. ` +
+      "Re-run get-rh-token.mjs and update ROBINHOOD_REFRESH_TOKEN on Render."
     );
   }
 
-  if (!data.access_token) {
-    throw new Error(`Robinhood auth failed: ${JSON.stringify(data)}`);
-  }
-
   _token = data.access_token;
-  // Expire 5 minutes early to be safe
   _tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
+  // Update in-memory refresh token if Robinhood rotated it
+  if (data.refresh_token) _refreshToken = data.refresh_token;
   return _token;
 }
 
@@ -61,7 +87,7 @@ async function getToken() {
 async function rhGet(url) {
   const token = await getToken();
   const fullUrl = url.startsWith("http") ? url : `${RH_BASE}${url}`;
-  const resp = await fetch(fullUrl, {
+  const resp = await fetchWithTimeout(fullUrl, {
     headers: { Authorization: `Bearer ${token}`, "User-Agent": UA },
   });
   if (!resp.ok) {
