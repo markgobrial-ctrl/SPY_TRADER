@@ -15,6 +15,8 @@ app.use(express.json());
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
 if (DASHBOARD_PASSWORD) {
   app.use((req, res, next) => {
+    // VPS endpoints use PUSH_SECRET — skip Basic Auth for them
+    if (req.path === "/api/push" || req.path === "/api/pending") return next();
     const auth = req.headers.authorization;
     if (auth && auth.startsWith("Basic ")) {
       const [, user, pass] = Buffer.from(auth.slice(6), "base64").toString().match(/^([^:]*):(.*)$/) || [];
