@@ -200,7 +200,7 @@ async function runScan(instruction = null) {
     const history = db.data.conversationHistory.slice(-20); // keep last 20 turns
     const messages = [...history, { role: "user", content: scanInstruction }];
 
-    const response = await anthropic.messages.create({
+    const response = await anthropic.beta.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1000,
       system: SYSTEM_PROMPT,
@@ -209,6 +209,7 @@ async function runScan(instruction = null) {
         { type: "url", url: MCP_RH,  name: "robinhood" },
         { type: "url", url: MCP_FMP, name: "fmp" },
       ],
+      betas: ["mcp-client-2025-04-04"],
     });
 
     const textBlocks = response.content.filter(b => b.type === "text");
@@ -364,7 +365,7 @@ let acctCache = null, acctCacheAt = 0;
 app.get("/api/account", async (req, res) => {
   if (acctCache && Date.now() - acctCacheAt < 30_000) return res.json(acctCache);
   try {
-    const r = await anthropic.messages.create({
+    const r = await anthropic.beta.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 1200,
       system: "Return ONLY valid JSON. No markdown, no code fences, no explanation. Raw JSON only.",
@@ -379,6 +380,7 @@ Steps:
 Return empty array for positions if none open.`,
       }],
       mcp_servers: [{ type: "url", url: MCP_RH, name: "robinhood" }],
+      betas: ["mcp-client-2025-04-04"],
     });
     const text = r.content.filter(b => b.type === "text").map(b => b.text).join("").trim();
     const m = text.match(/\{[\s\S]*\}/);
