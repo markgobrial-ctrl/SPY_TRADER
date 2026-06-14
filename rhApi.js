@@ -18,6 +18,8 @@ let _tokenExpiry = 0;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
+export async function getRHToken() { return getToken(); }
+
 async function getToken() {
   if (_token && Date.now() < _tokenExpiry) return _token;
 

@@ -7,7 +7,7 @@ import { JSONFile } from "lowdb/node";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import "dotenv/config";
-import { getAccountData } from "./rhApi.js";
+import { getAccountData, getRHToken } from "./rhApi.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -201,13 +201,14 @@ async function runScan(instruction = null) {
     const history = db.data.conversationHistory.slice(-20); // keep last 20 turns
     const messages = [...history, { role: "user", content: scanInstruction }];
 
+    const rhToken = await getRHToken();
     const response = await anthropic.beta.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1000,
       system: SYSTEM_PROMPT,
       messages,
       mcp_servers: [
-        { type: "url", url: MCP_RH,  name: "robinhood" },
+        { type: "url", url: MCP_RH,  name: "robinhood", authorization_token: rhToken },
         { type: "url", url: MCP_FMP, name: "fmp" },
       ],
       betas: ["mcp-client-2025-04-04"],
