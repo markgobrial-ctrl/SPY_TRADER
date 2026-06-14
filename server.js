@@ -12,6 +12,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// ── Basic Auth ────────────────────────────────────────────────────────────────
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
+if (DASHBOARD_PASSWORD) {
+  app.use((req, res, next) => {
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith("Basic ")) {
+      const [, user, pass] = Buffer.from(auth.slice(6), "base64").toString().match(/^([^:]*):(.*)$/) || [];
+      if (pass === DASHBOARD_PASSWORD) return next();
+    }
+    res.set("WWW-Authenticate", 'Basic realm="SPY Trader"');
+    res.status(401).send("Unauthorized");
+  });
+}
+
 app.use(express.static(__dirname));
 
 // ── Database (flat JSON file, persists on Render disk) ────────────────────────
