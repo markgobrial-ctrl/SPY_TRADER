@@ -185,6 +185,34 @@ if (action) {
   process.exit(0);
 }
 
+// Push basic account data every run (so dashboard always shows something)
+async function pushAccountData() {
+  try {
+    const output = execFileSync("claude", [
+      "--model", "claude-haiku-4-5-20251001",
+      "--max-turns", "3",
+      "-p", `Use the robinhood-trading MCP to get portfolio and account info for account ${ACCOUNT_NUMBER}. Reply ONLY with a JSON object (no markdown) with these fields: accountNumber, buyingPower, portfolioValue, totalPnl. Use numbers not strings for numeric fields.`,
+    ], {
+      env: { ...process.env },
+      timeout: 60 * 1000,
+      encoding: "utf8",
+    });
+    const match = output.match(/\{[\s\S]*\}/);
+    if (match) {
+      const account = JSON.parse(match[0]);
+      await push({ account });
+    }
+  } catch (e) {
+    console.error("Account push failed:", e.message);
+  }
+}
+
+// Only push account data once every 5 minutes to save API calls
+if (!state.lastAccountPush || Date.now() - state.lastAccountPush > 5 * 60 * 1000) {
+  await pushAccountData();
+  saveState({ ...state, lastAccountPush: Date.now() });
+}
+
 // Skip if disabled or outside market hours
 if (!enabled) { console.log("Agent disabled"); process.exit(0); }
 if (!isMarketHours()) { console.log("Outside market hours"); process.exit(0); }
