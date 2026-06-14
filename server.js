@@ -12,10 +12,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(join(__dirname, "../public")));
+app.use(express.static(__dirname));
 
 // ── Database (flat JSON file, persists on Render disk) ────────────────────────
-const db = new Low(new JSONFile(join(__dirname, "../data/db.json")), {
+const db = new Low(new JSONFile(join(__dirname, "data/db.json")), {
   logs: [],
   trades: [],
   conversationHistory: [],
