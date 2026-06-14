@@ -350,7 +350,7 @@ async function fetchAccount(force = false) {
     renderAccount(d);
     document.getElementById("acct-refresh-time").textContent = "Updated " + new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"});
   } catch (e) {
-    document.getElementById("acct-refresh-time").textContent = "Error — tap Refresh";
+    document.getElementById("acct-refresh-time").textContent = "Error: " + e.message;
   } finally {
     acctLoading = false;
   }

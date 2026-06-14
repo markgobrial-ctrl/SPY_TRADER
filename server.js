@@ -374,6 +374,7 @@ app.get("/api/account", async (req, res) => {
     acctCacheAt = Date.now();
     res.json(acctCache);
   } catch (e) {
+    log("error", `Account fetch error: ${e.message}`);
     res.status(500).json({ error: e.message });
   }
 });
