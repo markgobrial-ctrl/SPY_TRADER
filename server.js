@@ -24,8 +24,9 @@ const DAILY_LOSS_LIMIT = Number(process.env.DAILY_LOSS_LIMIT) || 0;
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
 if (DASHBOARD_PASSWORD) {
   app.use((req, res, next) => {
-    // VPS endpoints use PUSH_SECRET — skip Basic Auth for them
-    if (req.path === "/api/push" || req.path === "/api/pending") return next();
+    // VPS endpoints use PUSH_SECRET — skip Basic Auth for them.
+    // /health is public so Render's health check (and version probes) work.
+    if (req.path === "/api/push" || req.path === "/api/pending" || req.path === "/health") return next();
     const auth = req.headers.authorization;
     if (auth && auth.startsWith("Basic ")) {
       const [, user, pass] = Buffer.from(auth.slice(6), "base64").toString().match(/^([^:]*):(.*)$/) || [];
@@ -342,7 +343,13 @@ app.get("/api/pending", async (req, res) => {
 });
 
 // Health check for Render
-app.get("/health", (req, res) => res.json({ ok: true, time: getETTime() }));
+app.get("/health", (req, res) => res.json({
+  ok: true,
+  time: getETTime(),
+  version: process.env.RENDER_GIT_COMMIT || "dev",
+  // Capability markers — confirm which features the running build has.
+  features: { closeTracking: true, mergeAccount: true },
+}));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
