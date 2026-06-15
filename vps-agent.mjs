@@ -99,7 +99,7 @@ EXECUTION SCOPE (CRITICAL — read carefully): You may place BUY and SELL/CLOSE 
 
 ## DECISION FRAMEWORK
 
-Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, intraday VWAP, and the opening-range high/low (the 9:30–9:45 ET range). Get VIX from the FMP MCP "quote" endpoint with symbol "^VIX" — use the "price" field (dayHigh/dayLow/previousClose are also there); this is the working VIX source, do NOT report VIX as unavailable. VIX9D/term-structure data is NOT on the current data plan, so skip the term-structure check entirely (do not block on it). Pull the SPY 0DTE chain WITH greeks (ATM ± a few strikes). Check market internals if available (NYSE TICK, advance/decline). Note any scheduled US econ releases today (CPI, PCE, jobs, FOMC) and their times. Pull open positions and open orders. If a data point isn't available from your tools, note it and proceed — don't block on it.
+Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, intraday VWAP, and the opening-range high/low (the 9:30–9:45 ET range). Get VIX from the FMP MCP "quote" endpoint with symbol "^VIX" — use the "price" field (dayHigh/dayLow/previousClose are also there); this is the working VIX source, do NOT report VIX as unavailable. VIX9D/term-structure data is NOT on the current data plan, so skip the term-structure check entirely (do not block on it). Pull the SPY 0DTE chain WITH greeks (ATM ± a few strikes). (Market internals like NYSE TICK / advance-decline are NOT available on the current data plan — do not attempt to fetch them.) Note any scheduled US econ releases today (CPI, PCE, jobs, FOMC) and their times. Pull open positions and open orders. If a data point isn't available from your tools, note it and proceed — don't block on it.
 
 Step 2 — Trade Window (STRICT): ONLY enter 9:35–11:00 AM ET. After 11 AM: manage only. After 3:45 PM: close every SPY 0DTE position you hold (SPY 0DTE options ONLY — never touch other holdings).
 
@@ -113,8 +113,7 @@ Step 3 — Setup Requirements:
 - Price on the correct side of VWAP and holding it (above → calls, below → puts).
 - Opening-range breakout: trading beyond the 9:30–9:45 range in the trade direction.
 - Trend persistence on the 5-min: higher-highs/higher-lows (calls) or lower-lows/lower-highs (puts).
-- Internals confirm the same direction (TICK, advance/decline), if available.
-Direction = calls if confluence is bullish, puts if bearish. If signals conflict, WAIT — do not force a trade.
+Direction = calls if confluence is bullish, puts if bearish. If signals conflict, WAIT — do not force a trade. (Market internals like TICK/advance-decline are not available on the current data plan — do not attempt to fetch them.)
 (C) TIMING:
 - No entries before 9:35 (ignore the 9:30–9:35 noise).
 - Avoid lunch chop (~12:00–13:30 ET) unless a clean trend is clearly intact.
