@@ -151,29 +151,10 @@ Step 9 — Report format:
 📈 BOOK: [Open positions, entry, current, % P&L]
 ⏱ NEXT: [What to watch]
 💾 ACCOUNT_JSON: {"buyingPower":0,"portfolioValue":0,"totalPnl":0}
-💾 CLOSE_JSON: {"closes":[]}
 
-Replace the zeros in ACCOUNT_JSON with real values from the portfolio tool. This line must always appear.
-
-CLOSE_JSON reports positions you CLOSED (exited) THIS scan, for win/loss tracking. If you closed nothing this scan, leave it as {"closes":[]}. If you closed one or more positions, list each with its realized P&L in dollars (proceeds minus cost), e.g. {"closes":[{"type":"call","strike":600,"realizedPnl":142.50},{"type":"put","strike":598,"realizedPnl":-88.00}]}. Only count actual exits here, never new entries. This line must always appear.
+Replace the zeros in ACCOUNT_JSON with real values from the portfolio tool. This line must always appear. (Win/loss and realized P&L are tracked separately from your order history, so you do not need to report closes here.)
 
 HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY 9:35–11 AM ET entries. Directional, no spreads. Risk-based sizing, 1–2 contracts, max $400 outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <16 or >35. Need real directional confluence (≥2 signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
-
-// ── Parse closed positions from a scan's CLOSE_JSON footer ────────────────────
-// Returns an array of { type?, strike?, realizedPnl } for positions exited this
-// scan. Tolerant of the agent emitting either {"closes":[...]} or a bare array.
-function parseCloses(text) {
-  const m = text.match(/CLOSE_JSON[^[{]*([[{][\s\S]*?[\]}])\s*$/m) ||
-            text.match(/CLOSE_JSON[^[{]*([[{][\s\S]*?[\]}])/);
-  if (!m) return [];
-  try {
-    const parsed = JSON.parse(m[1]);
-    const list = Array.isArray(parsed) ? parsed : (parsed.closes || []);
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
-}
 
 // ── Run a Claude Code scan ────────────────────────────────────────────────────
 
@@ -225,35 +206,18 @@ async function runScan(instruction = null) {
       try { account = JSON.parse(acctMatch[1]); } catch {}
     }
 
-    // Extract closed positions (round-trip exits) for win/loss tracking.
-    // A "trade" is a completed round trip, so we count closes — not entries —
-    // which is what makes the dashboard win-rate meaningful.
-    const closes = parseCloses(text);
-
-    // Push the full scan output + latest account snapshot (not counted as a trade).
+    // Push the full scan output + latest account snapshot.
     await push({
       type: "agent",
       content: text,
       ...(account ? { account } : {}),
     });
 
-    // Record each closed position as a completed trade with its win/loss flag.
-    for (const c of closes) {
-      const pnl = Number(c.realizedPnl ?? c.pnl);
-      if (!Number.isFinite(pnl)) continue;
-      const label = [c.type, c.strike].filter(Boolean).join(" ");
-      await push({
-        type: pnl >= 0 ? "trade" : "warn",
-        content: `Closed ${label ? `SPY ${label} ` : "position "}— realized P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}`,
-        trade: true,
-        win: pnl > 0,
-        realizedPnl: pnl,
-      });
-    }
+    console.log(`[${getETTime()}] Scan done.`);
 
-    console.log(`[${getETTime()}] Scan done. Closed positions: ${closes.length}`);
-
-    // Always push account data after a scan
+    // Always reconcile account data + closed round trips after a scan.
+    // Win/loss + realized P&L are counted from order history (see pushAccountData),
+    // which catches BOTH agent-executed and manually-closed positions.
     await pushAccountData();
   } catch (err) {
     await push({ type: "error", content: `VPS agent error: ${err.message}` });
@@ -279,25 +243,35 @@ if (action) {
   process.exit(0);
 }
 
-// Push basic account data every run (so dashboard always shows something)
+// Push account data (buying power, portfolio value, open positions) AND today's
+// closed SPY round trips reconciled from order history. The closes carry the
+// closing order's id so the server can count each one exactly once — this is how
+// both agent-executed AND manually-closed positions get into win-rate/P&L.
 async function pushAccountData() {
   try {
     const { ANTHROPIC_API_KEY: _2, ...envForClaude2 } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
-      "--max-turns", "12",
-      "-p", `Use the robinhood-trading MCP for account ${ACCOUNT_NUMBER}. Gather: (1) buying power, portfolio value, and total/day P&L in dollars; (2) ALL open option positions (nonzero quantity), with each position's current mark price so you can compute its percent P&L. Reply with ONLY a JSON object (no markdown) in EXACTLY this shape:
-{"accountNumber":"${ACCOUNT_NUMBER}","buyingPower":0,"portfolioValue":0,"totalPnl":0,"positions":[{"symbol":"SPY","type":"call","strike":0,"expiry":"YYYY-MM-DD","qty":0,"avg_cost":0,"current_price":0,"pnl_pct":0}]}
-Rules: use numbers (not strings) for all numeric fields; avg_cost and current_price are per-share option prices (not x100); pnl_pct = (current_price - avg_cost) / avg_cost * 100 rounded to 1 decimal; include EVERY open option position (SPY and any others); if there are none, use "positions":[].`,
+      "--max-turns", "16",
+      "-p", `Use the robinhood-trading MCP for account ${ACCOUNT_NUMBER}. Gather three things:
+(1) buying power, portfolio value, and total/day P&L in dollars.
+(2) ALL open option positions (nonzero quantity), each with its current mark price.
+(3) Today's CLOSED SPY option round trips. Look at today's FILLED option orders. For each SPY option that was SOLD-TO-CLOSE today, match it to its BUY-TO-OPEN (same strike/expiry/type) and compute realized P&L = (sell price − buy price) × contracts × 100. Use the closing (sell) order's id as a unique "id". Only SPY options — ignore any non-SPY symbol entirely.
+
+Reply with ONLY a JSON object (no markdown) in EXACTLY this shape:
+{"accountNumber":"${ACCOUNT_NUMBER}","buyingPower":0,"portfolioValue":0,"totalPnl":0,"positions":[{"symbol":"SPY","type":"call","strike":0,"expiry":"YYYY-MM-DD","qty":0,"avg_cost":0,"current_price":0,"pnl_pct":0}],"closes":[{"id":"<closing order id>","symbol":"SPY","type":"call","strike":0,"expiry":"YYYY-MM-DD","contracts":1,"realizedPnl":0}]}
+Rules: numbers (not strings) for numeric fields; avg_cost/current_price are per-share option prices (not x100); pnl_pct = (current_price − avg_cost)/avg_cost×100 to 1 decimal. If there are no open positions use "positions":[]. If no SPY options were closed today use "closes":[]. Never include non-SPY symbols in either array's "closes"; non-SPY may appear in "positions" for display only.`,
     ], {
       env: envForClaude2,
-      timeout: 120 * 1000,
+      timeout: 150 * 1000,
       encoding: "utf8",
     });
     const match = output.match(/\{[\s\S]*\}/);
     if (match) {
-      const account = JSON.parse(match[0]);
-      await push({ account });
+      const data = JSON.parse(match[0]);
+      const closes = Array.isArray(data.closes) ? data.closes : [];
+      delete data.closes; // keep the account snapshot clean
+      await push({ account: data, ...(closes.length ? { closes } : {}) });
     }
   } catch (e) {
     console.error("Account push failed:", e.message);

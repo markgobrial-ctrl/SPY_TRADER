@@ -50,6 +50,7 @@ const db = new Low(new JSONFile(dbPath), {
   scanInterval: 10,
   pendingAction: null,
   lastAccount: null,
+  countedCloseIds: [],
   stats: { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0, realizedTotal: 0, realizedToday: 0, realizedDate: null },
 });
 await db.read();
@@ -59,6 +60,7 @@ db.data.agentEnabled ??= false;
 db.data.scanInterval ??= 10;
 db.data.pendingAction ??= null;
 db.data.lastAccount  ??= null;
+db.data.countedCloseIds ??= [];
 db.data.stats        ??= { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0 };
 // Backfill realized-P&L fields on databases created before this feature existed.
 db.data.stats.realizedTotal ??= 0;
@@ -134,6 +136,49 @@ function maybeTripLossLimit() {
   log("warn", `🛑 Daily loss limit hit (${db.data.stats.realizedToday.toFixed(2)} ≤ -${DAILY_LOSS_LIMIT}). Agent auto-disabled for the day.`);
   broadcast("enabled", false);
   broadcast("emergency", true);
+}
+
+// ── Record a closed round trip exactly once ───────────────────────────────────
+// Closes are reconciled from Robinhood order history every cycle, so the same
+// close is reported repeatedly. Dedupe by the closing order id: count trades,
+// wins, and realized P&L only the first time we see a given id. Returns true if
+// it was newly counted. Catches both agent-executed and manual closes.
+function recordClose(c) {
+  const pnl = Number(c.realizedPnl ?? c.pnl);
+  if (!Number.isFinite(pnl)) return false;
+  const id = c.id != null ? String(c.id) : null;
+  if (id && db.data.countedCloseIds.includes(id)) return false; // already counted
+
+  db.data.stats.totalTrades++;
+  if (pnl > 0) db.data.stats.wins++;
+
+  const today = getETDate();
+  if (db.data.stats.realizedDate !== today) {
+    db.data.stats.realizedDate = today;
+    db.data.stats.realizedToday = 0;
+  }
+  db.data.stats.realizedTotal += pnl;
+  db.data.stats.realizedToday += pnl;
+
+  if (id) {
+    db.data.countedCloseIds.push(id);
+    if (db.data.countedCloseIds.length > 1000) {
+      db.data.countedCloseIds = db.data.countedCloseIds.slice(-1000);
+    }
+  }
+
+  const label = [c.symbol || "SPY", c.strike ? "$" + c.strike : "", (c.type || "").toUpperCase()].filter(Boolean).join(" ");
+  const entry = {
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    time: getETTime(), date: today,
+    summary: `Closed ${label} — realized P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}`,
+  };
+  db.data.trades.unshift(entry);
+  if (db.data.trades.length > 100) db.data.trades = db.data.trades.slice(0, 100);
+  broadcast("trade", entry);
+
+  maybeTripLossLimit();
+  return true;
 }
 
 // ── Agent state (set by VPS push) ─────────────────────────────────────────────
@@ -248,7 +293,7 @@ app.post("/api/push", async (req, res) => {
   if (PUSH_SECRET && req.headers["x-push-secret"] !== PUSH_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const { type, content, trade, account, scanningNow, win, realizedPnl } = req.body;
+  const { type, content, account, scanningNow, closes } = req.body;
 
   if (scanningNow !== undefined) {
     scanning = scanningNow;
@@ -257,29 +302,9 @@ app.post("/api/push", async (req, res) => {
 
   if (content) log(type || "agent", content);
 
-  if (trade) {
-    db.data.stats.totalTrades++;
-    // win is an optional explicit flag from the agent (true on a profitable close).
-    if (win === true) db.data.stats.wins++;
-
-    // Accumulate realized P&L from this closed round trip. realizedToday resets
-    // automatically when the ET calendar day rolls over.
-    const pnl = Number(realizedPnl);
-    if (Number.isFinite(pnl)) {
-      const today = getETDate();
-      if (db.data.stats.realizedDate !== today) {
-        db.data.stats.realizedDate = today;
-        db.data.stats.realizedToday = 0;
-      }
-      db.data.stats.realizedTotal += pnl;
-      db.data.stats.realizedToday += pnl;
-      maybeTripLossLimit();
-    }
-
-    const entry = { id: Date.now(), time: getETTime(), date: getETDate(), summary: content?.slice(0, 300) || "" };
-    db.data.trades.unshift(entry);
-    if (db.data.trades.length > 100) db.data.trades = db.data.trades.slice(0, 100);
-    broadcast("trade", entry);
+  // Closed round trips reconciled from order history (deduped by order id).
+  if (Array.isArray(closes)) {
+    for (const c of closes) recordClose(c);
   }
 
   if (type === "scan_start") db.data.stats.totalScans++;
