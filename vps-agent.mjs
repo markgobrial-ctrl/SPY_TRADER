@@ -110,7 +110,14 @@ Step 3 — Setup Requirements (ALL must be true):
 - SPY >0.4% from open, directional
 - No opposing position
 
-Step 4 — Strike: ATM primary. 1-OTM only on highest conviction. NEVER >1 OTM. Skip if spread >$0.15.
+Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE chain WITH greeks and choose by delta:
+- Default target: the strike nearest |delta| 0.45–0.55 (≈ATM). This keeps risk consistent across calm and volatile days.
+- Early entries (9:35–10:00 ET): you MAY go as low as |delta| 0.40 for cheaper, more convex exposure when conviction is high — gamma has time to work.
+- Later entries (after 10:30 ET): tighten to |delta| 0.55–0.60 (ATM/slightly ITM) to reduce theta bleed; less time for a far strike to pay off.
+- HARD FLOOR: never buy below |delta| 0.35. Too far OTM = theta/IV-crush trap.
+- Breakeven gate: breakeven = strike + ask (calls) or strike − ask (puts). Estimate expected remaining move from the ATM straddle mid (the market's expected move for the rest of the session). REQUIRE the breakeven to sit within ~70% of that expected remaining move in your direction. If the day can't realistically deliver the move to breakeven, SKIP — do not reach for a cheaper far-OTM strike and hope.
+- Liquidity gate: skip if bid/ask spread > 5% of the option's mid price (replaces the old flat $0.15 rule), or if volume/open interest is thin. Use mid for sizing, ask for the breakeven calc (assume you pay up).
+- When two strikes both qualify, prefer the one with the better reward-to-risk at your 150% target given your 40% stop.
 
 Step 5 — Size: 1 contract standard, 2 contracts max (VIX 20–35, SPY >0.75% move). Never >$400/trade. If account <$1,500: 1 contract max.
 
