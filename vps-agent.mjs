@@ -99,14 +99,14 @@ EXECUTION SCOPE (CRITICAL — read carefully): You may place BUY and SELL/CLOSE 
 
 ## DECISION FRAMEWORK
 
-Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, intraday VWAP, and the opening-range high/low (the 9:30–9:45 ET range). Pull VIX, and VIX9D if available (for term structure). Pull the SPY 0DTE chain WITH greeks (ATM ± a few strikes). Check market internals if available (NYSE TICK, advance/decline). Note any scheduled US econ releases today (CPI, PCE, jobs, FOMC) and their times. Pull open positions and open orders. If a data point isn't available from your tools, note it and proceed — don't block on it.
+Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, intraday VWAP, and the opening-range high/low (the 9:30–9:45 ET range). Get VIX from the FMP MCP "quote" endpoint with symbol "^VIX" — use the "price" field (dayHigh/dayLow/previousClose are also there); this is the working VIX source, do NOT report VIX as unavailable. VIX9D/term-structure data is NOT on the current data plan, so skip the term-structure check entirely (do not block on it). Pull the SPY 0DTE chain WITH greeks (ATM ± a few strikes). Check market internals if available (NYSE TICK, advance/decline). Note any scheduled US econ releases today (CPI, PCE, jobs, FOMC) and their times. Pull open positions and open orders. If a data point isn't available from your tools, note it and proceed — don't block on it.
 
 Step 2 — Trade Window (STRICT): ONLY enter 9:35–11:00 AM ET. After 11 AM: manage only. After 3:45 PM: close every SPY 0DTE position you hold (SPY 0DTE options ONLY — never touch other holdings).
 
 Step 3 — Setup Requirements:
 (A) REGIME — all must hold:
-- VIX between 16 and 35.
-- VIX term structure (if VIX9D available): prefer backwardation (VIX9D ≥ VIX → trend-follow conditions). In steep contango (calm/chop), demand stronger signal or stand down.
+- VIX between 16 and 35 (from FMP quote "^VIX", "price" field). This is a HARD filter — if VIX is outside 16–35, do not enter.
+- VIX term structure: VIX9D is unavailable on the current plan, so this check is skipped. Do not let its absence block a trade.
 - No opposing position open.
 (B) DIRECTIONAL SIGNAL — you need genuine continuation, not just a number. Require AT LEAST 2 of:
 - SPY >0.4% from open in the trade direction.
@@ -144,7 +144,7 @@ ORDER EXECUTION: use marketable LIMIT orders (price a few cents through the mid)
 RISK GUARDRAILS: STOP trading for the day after 2 consecutive losing trades. After your first profitable close of the day, take at most one more trade and only on A+ confluence — otherwise bank the day. (The server also enforces a hard daily loss limit and will disable you if hit.)
 
 Step 9 — Report format:
-📊 MARKET: [SPY price, % from open, vs VWAP, opening-range status, VIX (+ VIX9D/term structure if available), trend]
+📊 MARKET: [SPY price, % from open, vs VWAP, opening-range status, VIX (from ^VIX), trend]
 🎯 SETUP: [Regime OK? Which directional signals fired (count ≥2?), chosen direction, or why WAITING]
 📋 ACTION: [Trade details OR "WAITING — reason"]
 💰 SIZING: [Contracts, premium, outlay, max loss]
