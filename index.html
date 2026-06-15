@@ -291,7 +291,7 @@
       <div class="actions">
         <button class="act" onclick="manualScan()">⚡ Scan Now</button>
         <button class="act" onclick="refreshAccount(true)">↻ Refresh</button>
-        <button class="act" onclick="sendInstruction('Assess each open SPY option position against the strategy (trailing stop, underlying level vs VWAP/opening range, time-of-day theta risk). For each, give a clear HOLD, TRIM, or CLOSE call with a one-line reason. If no positions are open, say so.')">📋 Manage</button>
+        <button class="act" onclick="sendInstruction('REPORT ONLY — do NOT place any orders. Review EVERY position in the account: SPY 0DTE options, any other options, and any stocks/ETFs/equities. For each, give a HOLD, TRIM, or CLOSE opinion with a one-line reason (for SPY 0DTE, judge it against the strategy: trailing stop, underlying vs VWAP/opening range, time-of-day theta). This is advisory only for anything that is not a SPY 0DTE option — never trade non-SPY-0DTE holdings. If nothing is open, say so.')">📋 Manage</button>
         <button class="act danger" onclick="closeAll()">🔒 Close All</button>
       </div>
     </div>
