@@ -304,15 +304,18 @@ Rules: use numbers (not strings) for all numeric fields; avg_cost and current_pr
   }
 }
 
-// Only push account data during market hours, once every 15 minutes
-const nearMarket = (() => {
+// Refresh account data (buying power, portfolio value, open positions) on a
+// wide weekday window — 7:00 AM to 8:00 PM ET — so the dashboard shows the book
+// pre-market and after-hours, not just during regular trading hours. Once every
+// 15 minutes. Outside this window the last pushed snapshot persists on the server.
+const accountWindow = (() => {
   const et = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
   const day = et.getDay();
   if (day === 0 || day === 6) return false;
   const mins = et.getHours() * 60 + et.getMinutes();
-  return mins >= 9 * 60 + 30 && mins < 16 * 60 + 15;
+  return mins >= 7 * 60 && mins < 20 * 60;
 })();
-if (nearMarket && (!state.lastAccountPush || Date.now() - state.lastAccountPush > 15 * 60 * 1000)) {
+if (accountWindow && (!state.lastAccountPush || Date.now() - state.lastAccountPush > 15 * 60 * 1000)) {
   await pushAccountData();
   saveState({ ...state, lastAccountPush: Date.now() });
 }
