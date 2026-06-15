@@ -456,14 +456,17 @@
 let agentEnabled = false, scanning = false, currentInterval = 10;
 let nextScanAt = null, countdownTimer = null;
 let logs = [], trades = [];
-const ACCOUNT = "545721409";
+let ACCOUNT = "—";
+let es = null;
 
 function connect() {
-  const es = new EventSource("/api/stream");
+  if (es) es.close(); // close any stale connection before reconnecting
+  es = new EventSource("/api/stream");
   es.addEventListener("init", e => {
     const d = JSON.parse(e.data);
     logs = d.logs || []; trades = d.trades || [];
     agentEnabled = d.enabled; currentInterval = d.interval || 10; scanning = d.scanning;
+    if (d.account) ACCOUNT = d.account;
     updateStats(d.stats); updateAgentUI(); renderLogs(); renderTrades();
     document.getElementById("acct-label").textContent = "Agentic · " + ACCOUNT + " · Robinhood";
   });
@@ -481,7 +484,9 @@ function updateStats(s) {
   if (!s) return;
   document.getElementById("stat-scans").textContent  = s.totalScans  ?? "—";
   document.getElementById("stat-trades").textContent = s.totalTrades ?? "—";
-  const pnl = s.currentPnL ?? 0;
+  // Headline P&L = realized (booked) P&L from closed trades, falling back to the
+  // latest account snapshot for older data.
+  const pnl = s.realizedTotal ?? s.currentPnL ?? 0;
   const el = document.getElementById("stat-pnl");
   el.textContent = pnl !== 0 ? (pnl > 0 ? "+" : "") + "$" + Math.abs(pnl).toFixed(0) : "—";
   el.className = "stat-value " + (pnl > 0 ? "green" : pnl < 0 ? "red" : "");
@@ -628,7 +633,8 @@ function renderAccount(d) {
 
   document.getElementById("acct-portfolio").textContent = fmt$(d.portfolioValue ?? d.portfolio_value);
 
-  const pnl = d.totalPnl ?? d.stats?.currentPnL ?? null;
+  // Today P&L = realized (booked) P&L for the current ET day.
+  const pnl = d.stats?.realizedToday ?? d.totalPnl ?? null;
   const pnlEl = document.getElementById("acct-today-pnl");
   pnlEl.textContent = pnl != null ? (pnl >= 0 ? "+" : "") + fmt$(pnl) : "—";
   pnlEl.className = "acct-card-value " + (pnl > 0 ? "green" : pnl < 0 ? "red" : "");
@@ -665,7 +671,7 @@ function renderAccount(d) {
   wrEl.textContent = wr != null ? wr + "%" : "—";
   wrEl.className = "acct-card-value " + (wr >= 50 ? "green" : wr != null ? "red" : "");
 
-  const allPnl = s.currentPnL ?? null;
+  const allPnl = s.realizedTotal ?? s.currentPnL ?? null;
   const allPnlEl = document.getElementById("perf-alltime-pnl");
   allPnlEl.textContent = allPnl != null ? (allPnl >= 0 ? "+" : "") + fmt$(allPnl) : "—";
   allPnlEl.className = "acct-card-value " + (allPnl > 0 ? "green" : allPnl < 0 ? "red" : "");

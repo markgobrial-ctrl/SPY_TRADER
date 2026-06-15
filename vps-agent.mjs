@@ -20,7 +20,7 @@ import { execFileSync } from "child_process";
 
 const RENDER_URL = process.env.RENDER_URL?.replace(/\/$/, "");
 const PUSH_SECRET = process.env.PUSH_SECRET;
-const ACCOUNT_NUMBER = process.env.ROBINHOOD_ACCOUNT || "5UV19627";
+const ACCOUNT_NUMBER = process.env.ROBINHOOD_ACCOUNT || "545721409";
 
 if (!RENDER_URL) {
   console.error("RENDER_URL env var is required");
@@ -79,6 +79,10 @@ async function getPending() {
 // ── Scan state (persisted between cron runs via a lock file) ──────────────────
 import { readFileSync, writeFileSync, existsSync } from "fs";
 
+function clearMcpAuthCache() {
+  try { writeFileSync("/root/.claude/mcp-needs-auth-cache.json", "{}"); } catch {}
+}
+
 const STATE_FILE = "/tmp/spy-agent-state.json";
 function loadState() {
   try { return existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : {}; }
@@ -124,10 +128,29 @@ Step 9 — Report format:
 📈 BOOK: [Open positions, entry, current, % P&L]
 ⏱ NEXT: [What to watch]
 💾 ACCOUNT_JSON: {"buyingPower":0,"portfolioValue":0,"totalPnl":0}
+💾 CLOSE_JSON: {"closes":[]}
 
 Replace the zeros in ACCOUNT_JSON with real values from the portfolio tool. This line must always appear.
 
+CLOSE_JSON reports positions you CLOSED (exited) THIS scan, for win/loss tracking. If you closed nothing this scan, leave it as {"closes":[]}. If you closed one or more positions, list each with its realized P&L in dollars (proceeds minus cost), e.g. {"closes":[{"type":"call","strike":600,"realizedPnl":142.50},{"type":"put","strike":598,"realizedPnl":-88.00}]}. Only count actual exits here, never new entries. This line must always appear.
+
 HARD RULES: ONLY 9:35–11 AM entries. ONLY SPY 0DTE. ONLY 1–2 contracts, max $400. NEVER past 3:45 PM. NEVER VIX <16 or >35. NEVER <0.4% move. ONE trade/day max unless first closed profitably. Execute autonomously.`;
+
+// ── Parse closed positions from a scan's CLOSE_JSON footer ────────────────────
+// Returns an array of { type?, strike?, realizedPnl } for positions exited this
+// scan. Tolerant of the agent emitting either {"closes":[...]} or a bare array.
+function parseCloses(text) {
+  const m = text.match(/CLOSE_JSON[^[{]*([[{][\s\S]*?[\]}])\s*$/m) ||
+            text.match(/CLOSE_JSON[^[{]*([[{][\s\S]*?[\]}])/);
+  if (!m) return [];
+  try {
+    const parsed = JSON.parse(m[1]);
+    const list = Array.isArray(parsed) ? parsed : (parsed.closes || []);
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
 
 // ── Run a Claude Code scan ────────────────────────────────────────────────────
 
@@ -144,34 +167,72 @@ async function runScan(instruction = null) {
   await push({ type: "scan_start" });
 
   try {
+    // Run without ANTHROPIC_API_KEY so claude uses stored claudeAiOauth credentials,
+    // which carry the Robinhood MCP OAuth context
+    clearMcpAuthCache();
+    const { ANTHROPIC_API_KEY: _1, ...envForClaude } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
       "--max-turns", "20",
       "-p", prompt,
     ], {
-      env: { ...process.env },
+      env: envForClaude,
       timeout: 3 * 60 * 1000, // 3 min max
       encoding: "utf8",
     });
 
     const text = output.trim();
-    const didTrade = /place_option_order|placed.*order|bought|sold/i.test(text);
+
+    // Detect Robinhood OAuth failure — escalate to dashboard
+    if (/https?:\/\/.*oauth|sign.?in.*required|needs?.auth/i.test(text) ||
+        /claude\.ai\/oauth|agent\.robinhood.*auth/i.test(text)) {
+      const urlMatch = text.match(/https?:\/\/[^\s"]+/);
+      const authUrl = urlMatch ? urlMatch[0] : null;
+      console.error(`[${getETTime()}] Robinhood auth expired — OAuth required`);
+      await push({
+        type: "error",
+        content: `⚠️ Robinhood auth expired. Re-authenticate:\n1. SSH: ssh -i ~/Downloads/ssh-key-2026-06-14.key ubuntu@163.192.194.121\n2. sudo -i\n3. cd /root/spy-trader && source .env && claude -p "check robinhood"\n4. Open the URL it shows in your browser${authUrl ? `\n\nURL: ${authUrl}` : ""}`,
+      });
+      return; // Don't record as a successful scan
+    }
 
     // Extract account data from JSON footer in scan output
     let account = null;
-    const acctMatch = text.match(/ACCOUNT_JSON:\s*(\{[^}]+\})/);
+    const acctMatch = text.match(/ACCOUNT_JSON[^{]*(\{[\s\S]*?\})/);
     if (acctMatch) {
       try { account = JSON.parse(acctMatch[1]); } catch {}
     }
 
+    // Extract closed positions (round-trip exits) for win/loss tracking.
+    // A "trade" is a completed round trip, so we count closes — not entries —
+    // which is what makes the dashboard win-rate meaningful.
+    const closes = parseCloses(text);
+
+    // Push the full scan output + latest account snapshot (not counted as a trade).
     await push({
       type: "agent",
       content: text,
-      trade: didTrade,
       ...(account ? { account } : {}),
     });
 
-    console.log(`[${getETTime()}] Scan done. Trade: ${didTrade}`);
+    // Record each closed position as a completed trade with its win/loss flag.
+    for (const c of closes) {
+      const pnl = Number(c.realizedPnl ?? c.pnl);
+      if (!Number.isFinite(pnl)) continue;
+      const label = [c.type, c.strike].filter(Boolean).join(" ");
+      await push({
+        type: pnl >= 0 ? "trade" : "warn",
+        content: `Closed ${label ? `SPY ${label} ` : "position "}— realized P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}`,
+        trade: true,
+        win: pnl > 0,
+        realizedPnl: pnl,
+      });
+    }
+
+    console.log(`[${getETTime()}] Scan done. Closed positions: ${closes.length}`);
+
+    // Always push account data after a scan
+    await pushAccountData();
   } catch (err) {
     await push({ type: "error", content: `VPS agent error: ${err.message}` });
     console.error("Scan error:", err.message);
@@ -199,12 +260,14 @@ if (action) {
 // Push basic account data every run (so dashboard always shows something)
 async function pushAccountData() {
   try {
+    clearMcpAuthCache();
+    const { ANTHROPIC_API_KEY: _2, ...envForClaude2 } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
       "--max-turns", "3",
       "-p", `Use the robinhood-trading MCP to get portfolio and account info for account ${ACCOUNT_NUMBER}. Reply ONLY with a JSON object (no markdown) with these fields: accountNumber, buyingPower, portfolioValue, totalPnl. Use numbers not strings for numeric fields.`,
     ], {
-      env: { ...process.env },
+      env: envForClaude2,
       timeout: 60 * 1000,
       encoding: "utf8",
     });
