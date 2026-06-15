@@ -389,7 +389,9 @@ function updateStats() {
   const pnlEl = document.getElementById("s-pnl");
   pnlEl.textContent = (s.realizedTotal != null || s.currentPnL != null) ? fmtPnl(realized) : "—";
   pnlEl.className = "v " + pnlCls(realized);
-  const wr = s.winRate;
+  // Compute win rate client-side from wins/trades — the live stats feed carries
+  // both, so this stays correct without waiting on an /api/account fetch.
+  const wr = Number(s.totalTrades) > 0 ? Math.round((s.wins || 0) / s.totalTrades * 100) : (s.winRate ?? null);
   const wrEl = document.getElementById("s-winrate");
   wrEl.textContent = wr != null ? wr + "%" : "—";
   wrEl.className = "v " + (wr == null ? "" : wr >= 50 ? "green" : "red");
