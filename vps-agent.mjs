@@ -79,10 +79,6 @@ async function getPending() {
 // ── Scan state (persisted between cron runs via a lock file) ──────────────────
 import { readFileSync, writeFileSync, existsSync } from "fs";
 
-function clearMcpAuthCache() {
-  try { writeFileSync("/root/.claude/mcp-needs-auth-cache.json", "{}"); } catch {}
-}
-
 const STATE_FILE = "/tmp/spy-agent-state.json";
 function loadState() {
   try { return existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : {}; }
@@ -195,8 +191,7 @@ async function runScan(instruction = null) {
 
   try {
     // Run without ANTHROPIC_API_KEY so claude uses stored claudeAiOauth credentials,
-    // which carry the Robinhood MCP OAuth context
-    clearMcpAuthCache();
+    // which carry the Robinhood MCP OAuth context.
     const { ANTHROPIC_API_KEY: _1, ...envForClaude } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
@@ -287,11 +282,10 @@ if (action) {
 // Push basic account data every run (so dashboard always shows something)
 async function pushAccountData() {
   try {
-    clearMcpAuthCache();
     const { ANTHROPIC_API_KEY: _2, ...envForClaude2 } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
-      "--max-turns", "3",
+      "--max-turns", "6",
       "-p", `Use the robinhood-trading MCP to get portfolio and account info for account ${ACCOUNT_NUMBER}. Reply ONLY with a JSON object (no markdown) with these fields: accountNumber, buyingPower, portfolioValue, totalPnl. Use numbers not strings for numeric fields.`,
     ], {
       env: envForClaude2,

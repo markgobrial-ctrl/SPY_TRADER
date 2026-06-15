@@ -10,7 +10,6 @@
  */
 
 import { execFileSync } from "child_process";
-import { writeFileSync } from "fs";
 
 const RENDER_URL = process.env.RENDER_URL?.replace(/\/$/, "");
 const PUSH_SECRET = process.env.PUSH_SECRET;
@@ -21,10 +20,6 @@ function getETTime() {
     timeZone: "America/New_York",
     hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
-}
-
-function clearMcpAuthCache() {
-  try { writeFileSync("/root/.claude/mcp-needs-auth-cache.json", "{}"); } catch {}
 }
 
 async function push(body) {
@@ -46,11 +41,10 @@ async function push(body) {
 console.log(`[${getETTime()}] Warmup starting...`);
 
 try {
-  clearMcpAuthCache();
   const { ANTHROPIC_API_KEY: _, ...env } = { ...process.env, HOME: "/root" };
   const output = execFileSync("claude", [
     "--model", "claude-sonnet-4-6",
-    "--max-turns", "3",
+    "--max-turns", "6",
     "-p", `Use the robinhood-trading MCP to check the buying power and portfolio value for account ${ACCOUNT_NUMBER}. Reply with a single JSON object: {"buyingPower": <number>, "portfolioValue": <number>}. No markdown.`,
   ], {
     env,
