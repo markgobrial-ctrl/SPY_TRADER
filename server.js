@@ -285,7 +285,10 @@ app.post("/api/push", async (req, res) => {
   if (type === "scan_start") db.data.stats.totalScans++;
 
   if (account) {
-    db.data.lastAccount = account;
+    // Merge rather than replace: lightweight pushes (e.g. warmup sends only
+    // buying power / portfolio value, no positions) must not wipe the last
+    // known positions list. A push that includes positions:[] still overwrites.
+    db.data.lastAccount = { ...(db.data.lastAccount || {}), ...account };
     // Keep the headline P&L stat in sync with the latest account snapshot so the
     // dashboard shows a real number instead of always "—".
     const pnl = Number(account.totalPnl ?? account.total_pnl);

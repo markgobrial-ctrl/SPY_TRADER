@@ -495,7 +495,7 @@ function renderAccount(d) {
     const val = (p.qty && p.current_price) ? fmt$(p.qty*p.current_price*100,0) : "—";
     return `<div class="pos">
       <div class="pos-top">
-        <div class="pos-name">SPY $${p.strike ?? "—"} <span class="tag ${side==="call"?"call":"put"}">${SIDE}</span> <span style="color:var(--sub);font-weight:500;font-size:12px;">${expiry}</span></div>
+        <div class="pos-name">${esc(p.symbol||"SPY")} $${p.strike ?? "—"} <span class="tag ${side==="call"?"call":"put"}">${SIDE}</span> <span style="color:var(--sub);font-weight:500;font-size:12px;">${expiry}</span></div>
         <div class="pos-pnl ${pnlCls(pct)}">${pct==null?"—":(pct>=0?"+":"")+pct.toFixed(0)+"%"}</div>
       </div>
       <div class="pos-grid">

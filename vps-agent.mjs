@@ -285,11 +285,13 @@ async function pushAccountData() {
     const { ANTHROPIC_API_KEY: _2, ...envForClaude2 } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
-      "--max-turns", "6",
-      "-p", `Use the robinhood-trading MCP to get portfolio and account info for account ${ACCOUNT_NUMBER}. Reply ONLY with a JSON object (no markdown) with these fields: accountNumber, buyingPower, portfolioValue, totalPnl. Use numbers not strings for numeric fields.`,
+      "--max-turns", "12",
+      "-p", `Use the robinhood-trading MCP for account ${ACCOUNT_NUMBER}. Gather: (1) buying power, portfolio value, and total/day P&L in dollars; (2) ALL open option positions (nonzero quantity), with each position's current mark price so you can compute its percent P&L. Reply with ONLY a JSON object (no markdown) in EXACTLY this shape:
+{"accountNumber":"${ACCOUNT_NUMBER}","buyingPower":0,"portfolioValue":0,"totalPnl":0,"positions":[{"symbol":"SPY","type":"call","strike":0,"expiry":"YYYY-MM-DD","qty":0,"avg_cost":0,"current_price":0,"pnl_pct":0}]}
+Rules: use numbers (not strings) for all numeric fields; avg_cost and current_price are per-share option prices (not x100); pnl_pct = (current_price - avg_cost) / avg_cost * 100 rounded to 1 decimal; include EVERY open option position (SPY and any others); if there are none, use "positions":[].`,
     ], {
       env: envForClaude2,
-      timeout: 60 * 1000,
+      timeout: 120 * 1000,
       encoding: "utf8",
     });
     const match = output.match(/\{[\s\S]*\}/);
