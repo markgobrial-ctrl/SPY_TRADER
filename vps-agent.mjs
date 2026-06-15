@@ -173,14 +173,18 @@ async function runScan(instruction = null) {
   try {
     // Run without ANTHROPIC_API_KEY so claude uses stored claudeAiOauth credentials,
     // which carry the Robinhood MCP OAuth context.
+    // Prepend the full trading strategy so the agent actually follows it — the
+    // SYSTEM_PROMPT carries the strike/sizing/exit rules and the SPY-0DTE-only
+    // execution guardrail. Without this the agent runs on the generic task line only.
+    const fullPrompt = `${SYSTEM_PROMPT}\n\n=== CURRENT TASK ===\n${prompt}`;
     const { ANTHROPIC_API_KEY: _1, ...envForClaude } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
-      "--max-turns", "20",
-      "-p", prompt,
+      "--max-turns", "30",
+      "-p", fullPrompt,
     ], {
       env: envForClaude,
-      timeout: 3 * 60 * 1000, // 3 min max
+      timeout: 4 * 60 * 1000, // 4 min max
       encoding: "utf8",
     });
 
@@ -220,8 +224,13 @@ async function runScan(instruction = null) {
     // which catches BOTH agent-executed and manually-closed positions.
     await pushAccountData();
   } catch (err) {
-    await push({ type: "error", content: `VPS agent error: ${err.message}` });
-    console.error("Scan error:", err.message);
+    // execFileSync hides the real reason in err.stdout/err.stderr — surface it.
+    const detail = [err.stderr, err.stdout].map(x => (x || "").toString().trim()).filter(Boolean).join(" | ").slice(0, 600);
+    const reason = /max turns/i.test(detail) ? "hit max turns (scan too long)"
+                 : err.killed || /ETIMEDOUT|timed out/i.test(err.message) ? "timed out"
+                 : detail || err.message;
+    await push({ type: "error", content: `VPS scan error: ${reason}` });
+    console.error("Scan error:", reason);
   } finally {
     await push({ scanningNow: false });
   }
