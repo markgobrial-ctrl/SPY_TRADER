@@ -217,11 +217,6 @@ async function runScan(instruction = null) {
     });
 
     console.log(`[${getETTime()}] Scan done.`);
-
-    // Always reconcile account data + closed round trips after a scan.
-    // Win/loss + realized P&L are counted from order history (see pushAccountData),
-    // which catches BOTH agent-executed and manually-closed positions.
-    await pushAccountData();
   } catch (err) {
     // execFileSync hides the real reason in err.stdout/err.stderr — surface it.
     const detail = [err.stderr, err.stdout].map(x => (x || "").toString().trim()).filter(Boolean).join(" | ").slice(0, 600);
@@ -231,6 +226,10 @@ async function runScan(instruction = null) {
     await push({ type: "error", content: `VPS scan error: ${reason}` });
     console.error("Scan error:", reason);
   } finally {
+    // ALWAYS reconcile account data + closed round trips, even if the scan above
+    // errored or timed out. Win/loss + realized P&L are counted from order history
+    // (see pushAccountData), catching both agent-executed and manual closes.
+    try { await pushAccountData(); } catch {}
     await push({ scanningNow: false });
   }
 }
