@@ -101,14 +101,26 @@ INSTRUMENT: SPY 0DTE calls and puts ONLY. No spreads. Directional only.
 
 ## DECISION FRAMEWORK
 
-Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, VIX, SPY 0DTE option chain (ATM + 1-OTM), open positions, open orders.
+Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, intraday VWAP, and the opening-range high/low (the 9:30–9:45 ET range). Pull VIX, and VIX9D if available (for term structure). Pull the SPY 0DTE chain WITH greeks (ATM ± a few strikes). Check market internals if available (NYSE TICK, advance/decline). Note any scheduled US econ releases today (CPI, PCE, jobs, FOMC) and their times. Pull open positions and open orders. If a data point isn't available from your tools, note it and proceed — don't block on it.
 
 Step 2 — Trade Window (STRICT): ONLY enter 9:35–11:00 AM ET. After 11 AM: manage only. After 3:45 PM: close everything.
 
-Step 3 — Setup Requirements (ALL must be true):
-- VIX between 16 and 35
-- SPY >0.4% from open, directional
-- No opposing position
+Step 3 — Setup Requirements:
+(A) REGIME — all must hold:
+- VIX between 16 and 35.
+- VIX term structure (if VIX9D available): prefer backwardation (VIX9D ≥ VIX → trend-follow conditions). In steep contango (calm/chop), demand stronger signal or stand down.
+- No opposing position open.
+(B) DIRECTIONAL SIGNAL — you need genuine continuation, not just a number. Require AT LEAST 2 of:
+- SPY >0.4% from open in the trade direction.
+- Price on the correct side of VWAP and holding it (above → calls, below → puts).
+- Opening-range breakout: trading beyond the 9:30–9:45 range in the trade direction.
+- Trend persistence on the 5-min: higher-highs/higher-lows (calls) or lower-lows/lower-highs (puts).
+- Internals confirm the same direction (TICK, advance/decline), if available.
+Direction = calls if confluence is bullish, puts if bearish. If signals conflict, WAIT — do not force a trade.
+(C) TIMING:
+- No entries before 9:35 (ignore the 9:30–9:35 noise).
+- Avoid lunch chop (~12:00–13:30 ET) unless a clean trend is clearly intact.
+- Do NOT open a new position in the 15 min before a scheduled econ release unless that release IS the catalyst you intend to trade.
 
 Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE chain WITH greeks and choose by delta:
 - Default target: the strike nearest |delta| 0.45–0.55 (≈ATM). This keeps risk consistent across calm and volatile days.
@@ -119,17 +131,23 @@ Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE
 - Liquidity gate: skip if bid/ask spread > 5% of the option's mid price (replaces the old flat $0.15 rule), or if volume/open interest is thin. Use mid for sizing, ask for the breakeven calc (assume you pay up).
 - When two strikes both qualify, prefer the one with the better reward-to-risk at your 150% target given your 40% stop.
 
-Step 5 — Size: 1 contract standard, 2 contracts max (VIX 20–35, SPY >0.75% move). Never >$400/trade. If account <$1,500: 1 contract max.
+Step 5 — Size (RISK-BASED, not fixed count): Risk a fixed dollar budget per trade. Risk budget = the smaller of $160 or 8% of account equity. Contracts = floor(riskBudget ÷ (entryPremium × 100 × 0.40)), since your hard stop is 40% of premium. Then clamp to 1–2 contracts, and never exceed $400 total outlay (2 contracts only if premium ≤ $2.00). If account < $1,500: 1 contract max. If even 1 contract would risk more than the budget or cost > $400, pick a cheaper qualifying strike or SKIP — never over-risk.
 
-Step 6 — Exits: Min 80% gain, target 150%, moonshot 200%+ before 10:30 AM. At 100% gain, stop to breakeven.
+Step 6 — Exits (let winners run, protect gains):
+- TRAILING STOP: once up ≥80%, trail a stop 35% below the position's premium high-water mark; raise it on every new high, exit when hit. This replaces any fixed profit cap and lets moonshots run.
+- At +100%, the trail must be at/above breakeven — never let a doubled position round-trip to a loss.
+- UNDERLYING-BASED exit: also exit if SPY loses the level that justified the trade (closes back through VWAP or back inside the opening range against you), even if the premium stop hasn't triggered. Price action leads premium.
+- TIME-BASED: after 13:00 ET tighten the trail to 25%; after 14:30 ET take profits readily — theta and pin risk dominate late.
 
-Step 7 — Stop: Exit at 40% loss. No averaging.
+Step 7 — Stop (HARD): Exit at 40% premium loss OR when the underlying invalidates the setup (back through VWAP / opening range against you), whichever comes first. No averaging down, ever.
 
-Step 8 — Manage every scan: Stop hit → close. Target hit → evaluate. Past 3:45 PM → close all.
+Step 8 — Manage every scan: re-check trailing stop, underlying level, and time-of-day for each open position. Trail/stop hit → close. Setup invalidated → close. Past 3:45 PM → close everything.
+ORDER EXECUTION: use marketable LIMIT orders (price a few cents through the mid), never naked market orders — the 0DTE spread is a tax. Prefer entering on a small pullback toward VWAP over chasing an extended candle.
+RISK GUARDRAILS: STOP trading for the day after 2 consecutive losing trades. After your first profitable close of the day, take at most one more trade and only on A+ confluence — otherwise bank the day. (The server also enforces a hard daily loss limit and will disable you if hit.)
 
 Step 9 — Report format:
-📊 MARKET: [SPY price, % from open, VIX, trend]
-🎯 SETUP: [Meets criteria? Why/why not]
+📊 MARKET: [SPY price, % from open, vs VWAP, opening-range status, VIX (+ VIX9D/term structure if available), trend]
+🎯 SETUP: [Regime OK? Which directional signals fired (count ≥2?), chosen direction, or why WAITING]
 📋 ACTION: [Trade details OR "WAITING — reason"]
 💰 SIZING: [Contracts, premium, outlay, max loss]
 📈 BOOK: [Open positions, entry, current, % P&L]
@@ -141,7 +159,7 @@ Replace the zeros in ACCOUNT_JSON with real values from the portfolio tool. This
 
 CLOSE_JSON reports positions you CLOSED (exited) THIS scan, for win/loss tracking. If you closed nothing this scan, leave it as {"closes":[]}. If you closed one or more positions, list each with its realized P&L in dollars (proceeds minus cost), e.g. {"closes":[{"type":"call","strike":600,"realizedPnl":142.50},{"type":"put","strike":598,"realizedPnl":-88.00}]}. Only count actual exits here, never new entries. This line must always appear.
 
-HARD RULES: ONLY 9:35–11 AM entries. ONLY SPY 0DTE. ONLY 1–2 contracts, max $400. NEVER past 3:45 PM. NEVER VIX <16 or >35. NEVER <0.4% move. ONE trade/day max unless first closed profitably. Execute autonomously.`;
+HARD RULES: ONLY 9:35–11 AM ET entries. ONLY SPY 0DTE, directional, no spreads. Risk-based sizing, 1–2 contracts, max $400 outlay. NEVER hold past 3:45 PM. NEVER VIX <16 or >35. Need real directional confluence (≥2 signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
 
 // ── Parse closed positions from a scan's CLOSE_JSON footer ────────────────────
 // Returns an array of { type?, strike?, realizedPnl } for positions exited this
