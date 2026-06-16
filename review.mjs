@@ -14,8 +14,13 @@
  */
 
 import { execFileSync } from "child_process";
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from "fs";
 import { evaluate, loadParams, promote } from "./shadow.mjs";
+
+const PROPOSALS_FILE = "/root/spy-trader/proposals.jsonl";
+function logProposal(rec) {
+  try { appendFileSync(PROPOSALS_FILE, JSON.stringify({ ts: Date.now(), etDate: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), ...rec }) + "\n"); } catch {}
+}
 
 // Extract first balanced JSON object after a tag (handles nesting).
 function extractJson(text, tag) {
@@ -195,6 +200,7 @@ const safeChange = Object.fromEntries(Object.entries(change).filter(([k]) => SAF
 if (!Object.keys(safeChange).length) {
   verdictBlock += "No safe parameter change proposed this cycle.\n";
   dashVerdict = "No change proposed.";
+  logProposal({ change: {}, status: "none", rationale: proposalRaw?.rationale || "no change proposed" });
 } else {
   const proposed = { ...current, ...safeChange };
 
@@ -227,12 +233,24 @@ if (!Object.keys(safeChange).length) {
 
   // Auto-promotion is OFF by default. Only writes params.json when explicitly
   // enabled AND the shadow-test clears the gates. Risk params can never be here.
-  if (wins && process.env.AUTO_PROMOTE === "1") {
+  const autoPromoted = wins && process.env.AUTO_PROMOTE === "1";
+  if (autoPromoted) {
     const applied = promote(proposed, { edge: Math.round(edge * 10) / 10, source: "weekly-review", rationale: proposalRaw?.rationale });
     verdictBlock += `\n_PROMOTED (auto): params.json → ${JSON.stringify(applied)}. Agent uses the new params next scan. Revert anytime by deleting params.json on the VPS._\n`;
     dashVerdict += " — PROMOTED (auto)";
     await push({ type: "warn", content: `⚙️ Strategy auto-updated after shadow-test → ${JSON.stringify(applied)}. (Delete params.json on the VPS to revert.)` });
   }
+
+  // Log every proposal + verdict so the dashboard can show what was tried/worked.
+  logProposal({
+    change: safeChange,
+    confidence: proposalRaw?.confidence || "?",
+    rationale: proposalRaw?.rationale || "",
+    curEntries: cur.entries, proEntries: pro.entries,
+    curAvgRet: cur.avgRetPct, proAvgRet: pro.avgRetPct,
+    edge: Math.round(edge * 10) / 10,
+    status: autoPromoted ? "promoted" : !enough ? "insufficient" : wins ? "candidate" : "hold",
+  });
 }
 
 // Save the full review

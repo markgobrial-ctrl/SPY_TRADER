@@ -213,6 +213,26 @@
     .nav-lbl { font-size: 10.5px; font-weight: 600; margin-top: 2px; letter-spacing: .01em; }
     .nav-badge { position: absolute; top: 6px; right: calc(50% - 22px); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--blue); color: #fff; font-size: 10px; font-weight: 800; display: none; align-items: center; justify-content: center; }
 
+    /* ── Strategy tab ── */
+    .lever { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+    .lever:last-child { border-bottom: none; }
+    .lever-info { flex: 1; min-width: 0; }
+    .lever-label { font-size: 13.5px; font-weight: 600; color: var(--text); }
+    .lever-hint { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+    .lever-ctrl { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .step { width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--border2); background: var(--card2); color: var(--text2); font-size: 18px; font-weight: 600; cursor: pointer; font-family: inherit; line-height: 1; }
+    .step:active { background: var(--border); }
+    .lever-val { min-width: 52px; text-align: center; font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+    .lever-val.changed { color: var(--amber); }
+    .hist { background: var(--card2); border: 1px solid var(--border); border-radius: 11px; padding: 10px 12px; margin-top: 8px; }
+    .hist:first-child { margin-top: 0; }
+    .hist-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .hist-date { font-size: 11px; color: var(--muted); }
+    .hist-body { font-size: 12.5px; color: var(--text2); line-height: 1.5; }
+    .hist-why { font-size: 11.5px; color: var(--sub); margin-top: 3px; font-style: italic; }
+    .chip-amber { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(251,191,36,.25); }
+    .chip-blue  { background: var(--blue-bg);  color: var(--blue);  border: 1px solid rgba(91,157,255,.25); }
+
     ::-webkit-scrollbar { width: 0; height: 0; }
   </style>
 </head>
@@ -310,6 +330,31 @@
   <section class="screen" id="screen-trades">
     <div class="scroll" id="trades-list"><div class="empty"><span class="ic">⚡</span>No trades yet</div></div>
   </section>
+
+  <!-- ════ STRATEGY ════ -->
+  <section class="screen" id="screen-strategy">
+    <div class="scroll">
+      <div class="card">
+        <div class="card-head"><span class="card-title">Strategy Levers</span><span class="card-title" id="lever-dirty" style="color:var(--amber);display:none;">edited</span></div>
+        <div id="levers"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="act" id="lever-reset" onclick="resetLevers()" style="flex:1;">Reset</button>
+          <button class="act" id="lever-apply" onclick="applyLevers()" style="flex:2;border-color:rgba(91,157,255,.4);background:var(--blue-bg);color:var(--blue);">Apply changes</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;">Only these safe levers are tunable. Sizing, stops, the $400 cap, the VIX band and the SPY-0DTE guardrail are fixed and can't be changed here.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">What's Been Tried</span></div>
+        <div id="proposals-list"><div class="empty"><span class="ic">🧪</span>No reviews yet</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Change History</span></div>
+        <div id="history-list"><div class="empty"><span class="ic">📜</span>No changes yet</div></div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- ── Bottom nav ── -->
@@ -317,6 +362,7 @@
   <div class="nav-item active" id="nav-home" onclick="go('home')"><span class="nav-ic">🏠</span><span class="nav-lbl">Home</span></div>
   <div class="nav-item" id="nav-activity" onclick="go('activity')"><span class="nav-ic">📟</span><span class="nav-lbl">Activity</span><span class="nav-badge" id="act-badge">0</span></div>
   <div class="nav-item" id="nav-trades" onclick="go('trades')"><span class="nav-ic">⚡</span><span class="nav-lbl">Trades</span></div>
+  <div class="nav-item" id="nav-strategy" onclick="go('strategy')"><span class="nav-ic">🎛</span><span class="nav-lbl">Strategy</span></div>
 </nav>
 
 <script>
@@ -324,6 +370,14 @@ let agentEnabled = false, scanning = false, currentInterval = 10;
 let nextScanAt = null, countdownTimer = null;
 let logs = [], trades = [], lastStats = {}, lastAccount = null;
 let ACCOUNT = "—", es = null, unseenLogs = 0, acctTimer = null;
+let strategy = null, leverEdits = null;
+
+const LEVERS = [
+  { key: "entryWindowEnd", label: "Entry window ends", type: "time", min: "10:00", max: "11:00", step: 15, hint: "Latest time to open a new trade (start fixed at 9:35)" },
+  { key: "minSignals",     label: "Signals required",   type: "int",  min: 2, max: 4, step: 1, hint: "Confluence signals needed to enter (of 4)" },
+  { key: "deltaLow",       label: "Delta band — low",   type: "num",  min: 0.30, max: 0.65, step: 0.05, hint: "Lower bound of the strike-selection delta band" },
+  { key: "deltaHigh",      label: "Delta band — high",  type: "num",  min: 0.35, max: 0.70, step: 0.05, hint: "Upper bound of the strike-selection delta band" },
+];
 
 /* ── Connection ── */
 function connect() {
@@ -335,9 +389,11 @@ function connect() {
     agentEnabled = d.enabled; currentInterval = d.interval || 10; scanning = d.scanning;
     if (d.account) { ACCOUNT = d.account; document.getElementById("brand-sub").textContent = "Robinhood · " + ACCOUNT; }
     lastStats = d.stats || {};
+    if (d.strategy) { strategy = d.strategy; renderStrategy(); }
     updateStats(); updateAgent(); renderLogs(); renderTrades();
     refreshAccount();
   });
+  es.addEventListener("strategy", e => { strategy = JSON.parse(e.data); if (!leverEdits) renderStrategy(); });
   es.addEventListener("log",   e => { const x = JSON.parse(e.data); logs.unshift(x); if(logs.length>200)logs.pop(); prependLog(x); if(currentScreen!=="activity"){ unseenLogs++; updateBadge(); } });
   es.addEventListener("trade", e => { trades.unshift(JSON.parse(e.data)); renderTrades(); refreshAccount(true); });
   es.addEventListener("stats", e => { lastStats = JSON.parse(e.data); updateStats(); });
@@ -530,8 +586,79 @@ function go(n) {
   document.getElementById("nav-" + n).classList.add("active");
   if (n === "activity") { unseenLogs = 0; updateBadge(); }
   if (n === "home") refreshAccount();
+  if (n === "strategy") { fetch("/api/strategy").then(r=>r.json()).then(s=>{ strategy=s; if(!leverEdits) renderStrategy(); }).catch(()=>{}); renderStrategy(); }
 }
 function setText(id,v){ document.getElementById(id).textContent = v; }
+
+/* ── Strategy tab ── */
+function curParams() { return (strategy && strategy.params) || { entryWindowEnd:"11:00", minSignals:2, deltaLow:0.45, deltaHigh:0.55 }; }
+function fmtLever(L, v) { return L.type === "num" ? Number(v).toFixed(2) : String(v); }
+function timeToMin(t){ const [h,m]=String(t).split(":").map(Number); return h*60+(m||0); }
+function minToTime(m){ return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0"); }
+
+function stepLever(key, dir) {
+  const L = LEVERS.find(x=>x.key===key);
+  if (!leverEdits) leverEdits = { ...curParams() };
+  if (L.type === "time") {
+    let m = timeToMin(leverEdits[key]) + dir*L.step;
+    m = Math.max(timeToMin(L.min), Math.min(timeToMin(L.max), m));
+    leverEdits[key] = minToTime(m);
+  } else {
+    let v = Number(leverEdits[key]) + dir*L.step;
+    v = Math.max(L.min, Math.min(L.max, Math.round(v/L.step)*L.step));
+    leverEdits[key] = L.type === "num" ? Math.round(v*100)/100 : v;
+  }
+  // keep deltaHigh > deltaLow
+  if (leverEdits.deltaHigh <= leverEdits.deltaLow) leverEdits.deltaHigh = Math.round((leverEdits.deltaLow+0.05)*100)/100;
+  renderStrategy();
+}
+function resetLevers() { leverEdits = null; renderStrategy(); }
+async function applyLevers() {
+  if (!leverEdits) return;
+  const change = { ...leverEdits };
+  await fetch("/api/params", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ change }) });
+  flash("🛠 Strategy change sent — agent will apply within a minute");
+  leverEdits = null; renderStrategy();
+}
+
+const STATUS_CHIP = { promoted:["chip-green","Promoted"], candidate:["chip-green","Passed"], hold:["chip-red","Held"], insufficient:["chip-amber","Need data"], none:["chip-amber","No change"] };
+function renderStrategy() {
+  if (!document.getElementById("levers")) return;
+  const cur = curParams(), edit = leverEdits || cur, dirty = !!leverEdits;
+  document.getElementById("lever-dirty").style.display = dirty ? "inline" : "none";
+  document.getElementById("levers").innerHTML = LEVERS.map(L => {
+    const v = edit[L.key], changed = dirty && String(edit[L.key])!==String(cur[L.key]);
+    return `<div class="lever">
+      <div class="lever-info"><div class="lever-label">${L.label}</div><div class="lever-hint">${L.hint}</div></div>
+      <div class="lever-ctrl">
+        <button class="step" onclick="stepLever('${L.key}',-1)">−</button>
+        <span class="lever-val ${changed?'changed':''}">${fmtLever(L, v)}</span>
+        <button class="step" onclick="stepLever('${L.key}',1)">+</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  const props = (strategy && strategy.proposals || []).slice().reverse();
+  document.getElementById("proposals-list").innerHTML = props.length ? props.slice(0,12).map(p => {
+    const [cls,label] = STATUS_CHIP[p.status] || ["chip-amber", p.status||"?"];
+    const ch = Object.keys(p.change||{}).length ? Object.entries(p.change).map(([k,v])=>k+"="+v).join(", ") : "no change";
+    const edge = p.edge!=null && Object.keys(p.change||{}).length ? ` · edge ${p.edge>=0?"+":""}${p.edge}pp` : "";
+    return `<div class="hist">
+      <div class="hist-top"><span class="chip ${cls}">${label}</span><span class="hist-date">${esc(p.etDate||"")}</span></div>
+      <div class="hist-body"><b>${esc(ch)}</b>${edge}${p.rationale?`<div class="hist-why">${esc(p.rationale)}</div>`:""}</div>
+    </div>`;
+  }).join("") : '<div class="empty"><span class="ic">🧪</span>No reviews yet — needs a few days of data</div>';
+
+  const hist = (strategy && strategy.history || []).slice().reverse();
+  document.getElementById("history-list").innerHTML = hist.length ? hist.slice(0,12).map(h => {
+    const ch = Object.entries(h.to||{}).map(([k,v])=>k+"="+v).join(", ");
+    const src = h.source==="manual" ? "Manual" : "Auto";
+    return `<div class="hist">
+      <div class="hist-top"><span class="chip ${src==='Manual'?'chip-blue':'chip-green'}">${src}</span><span class="hist-date">${esc(h.etDate||"")}</span></div>
+      <div class="hist-body">${esc(ch)}${h.edge!=null?` · edge ${h.edge>=0?"+":""}${h.edge}pp`:""}</div>
+    </div>`;
+  }).join("") : '<div class="empty"><span class="ic">📜</span>No changes yet</div>';
+}
 
 /* ── Boot ── */
 updateMarket();

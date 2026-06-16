@@ -78,8 +78,18 @@ async function getPending() {
 
 // ── Scan state (persisted between cron runs via a lock file) ──────────────────
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
+import { promote } from "./shadow.mjs";
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
+const HISTORY_FILE = "/root/spy-trader/params-history.jsonl";
+const PROPOSALS_FILE = "/root/spy-trader/proposals.jsonl";
+
+function readJsonl(file, n = 30) {
+  try {
+    return readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-n)
+      .map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
 
 // Extract the first balanced JSON object following a tag (handles nested objects
 // and quoted braces — a plain regex can't). Returns the parsed object or null.
@@ -305,12 +315,26 @@ async function runScan(instruction = null) {
 const state = loadState();
 const { enabled, interval, action } = await getPending();
 
-// Handle pending commands from dashboard (close_all, manual scan)
+// Push current strategy levers + change/proposal history so the dashboard can
+// show them and the user can see what's being tried (cheap; no Claude call).
+async function pushStrategy() {
+  try {
+    await push({ strategy: { params: loadParams(), history: readJsonl(HISTORY_FILE), proposals: readJsonl(PROPOSALS_FILE) } });
+  } catch (e) { console.error("Strategy push failed:", e.message); }
+}
+
+// Handle pending commands from dashboard (close_all, manual scan, manual lever change)
 if (action) {
   if (action.type === "close_all") {
     await runScan(`URGENT: Close ALL open SPY 0DTE option positions immediately on account ${ACCOUNT_NUMBER} — SPY 0DTE OPTIONS ONLY. Check positions, then market-close each SPY 0DTE option. Do NOT sell, close, or modify any other option, any other-expiry contract, or any equity/stock/ETF — leave every non-SPY-0DTE holding completely untouched.`);
   } else if (action.type === "scan") {
     await runScan(action.instruction || null);
+  } else if (action.type === "set_params") {
+    // Manual lever change from the dashboard — clamp to the safe box, write, log.
+    const applied = promote(action.change || {}, { source: "manual" });
+    await push({ type: "info", content: `🛠 Strategy levers updated manually → ${JSON.stringify(applied)}` });
+    await pushStrategy();
+    process.exit(0);
   }
   saveState({ ...state, lastScanTime: Date.now() });
   process.exit(0);
@@ -364,6 +388,7 @@ const accountWindow = (() => {
 })();
 if (accountWindow && (!state.lastAccountPush || Date.now() - state.lastAccountPush > 15 * 60 * 1000)) {
   await pushAccountData();
+  await pushStrategy();
   saveState({ ...state, lastAccountPush: Date.now() });
 }
 

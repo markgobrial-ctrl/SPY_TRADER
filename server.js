@@ -20,6 +20,11 @@ const ACCOUNT_NUMBER = process.env.ROBINHOOD_ACCOUNT || "545721409";
 // the agent auto-disables for the rest of the day. Unset/0 = no breaker.
 const DAILY_LOSS_LIMIT = Number(process.env.DAILY_LOSS_LIMIT) || 0;
 
+// The only strategy levers that may be tuned — manually or by the learning loop.
+// Risk controls are never in this list. Validation/clamping is authoritative on
+// the VPS (clampParams); the server just refuses out-of-list keys.
+const SAFE_PARAM_KEYS = ["entryWindowEnd", "minSignals", "deltaLow", "deltaHigh"];
+
 // ── Basic Auth ────────────────────────────────────────────────────────────────
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
 if (DASHBOARD_PASSWORD) {
@@ -52,6 +57,7 @@ const db = new Low(new JSONFile(dbPath), {
   pendingAction: null,
   lastAccount: null,
   countedCloseIds: [],
+  strategy: { params: { entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55 }, history: [], proposals: [] },
   stats: { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0, realizedTotal: 0, realizedToday: 0, realizedDate: null },
 });
 await db.read();
@@ -62,6 +68,10 @@ db.data.scanInterval ??= 10;
 db.data.pendingAction ??= null;
 db.data.lastAccount  ??= null;
 db.data.countedCloseIds ??= [];
+db.data.strategy ??= { params: { entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55 }, history: [], proposals: [] };
+db.data.strategy.params ??= { entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55 };
+db.data.strategy.history ??= [];
+db.data.strategy.proposals ??= [];
 db.data.stats        ??= { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0 };
 // Backfill realized-P&L fields on databases created before this feature existed.
 db.data.stats.realizedTotal ??= 0;
@@ -203,6 +213,7 @@ app.get("/api/stream", (req, res) => {
     interval: db.data.scanInterval,
     scanning,
     account: ACCOUNT_NUMBER,
+    strategy: db.data.strategy,
   })}\n\n`);
 
   sseClients.add(res);
@@ -279,6 +290,21 @@ app.get("/api/stats", (req, res) => {
   res.json({ ...db.data.stats, enabled: db.data.agentEnabled, interval: db.data.scanInterval, scanning });
 });
 
+// Get strategy state (current levers + change history + proposal log)
+app.get("/api/strategy", (req, res) => res.json(db.data.strategy));
+
+// Manually set strategy levers — queues a clamped change the VPS applies.
+app.post("/api/params", async (req, res) => {
+  const incoming = req.body && req.body.change ? req.body.change : req.body || {};
+  const change = {};
+  for (const k of SAFE_PARAM_KEYS) if (incoming[k] !== undefined && incoming[k] !== null) change[k] = incoming[k];
+  if (!Object.keys(change).length) return res.status(400).json({ error: "No valid params (allowed: " + SAFE_PARAM_KEYS.join(", ") + ")" });
+  db.data.pendingAction = { type: "set_params", change, at: Date.now() };
+  await queueWrite();
+  log("info", `🛠 Manual param change requested: ${JSON.stringify(change)} — VPS will apply & clamp`);
+  res.json({ ok: true, change });
+});
+
 // ── Account data (pushed by VPS, served from DB) ─────────────────────────────
 app.get("/api/account", (req, res) => {
   if (!db.data.lastAccount) return res.status(503).json({ error: "No account data yet — VPS hasn't pushed data" });
@@ -294,7 +320,15 @@ app.post("/api/push", async (req, res) => {
   if (PUSH_SECRET && req.headers["x-push-secret"] !== PUSH_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const { type, content, account, scanningNow, closes } = req.body;
+  const { type, content, account, scanningNow, closes, strategy } = req.body;
+
+  // VPS reports the live strategy params + change history + proposal log.
+  if (strategy && typeof strategy === "object") {
+    if (strategy.params) db.data.strategy.params = strategy.params;
+    if (Array.isArray(strategy.history)) db.data.strategy.history = strategy.history.slice(-50);
+    if (Array.isArray(strategy.proposals)) db.data.strategy.proposals = strategy.proposals.slice(-50);
+    broadcast("strategy", db.data.strategy);
+  }
 
   if (scanningNow !== undefined) {
     scanning = scanningNow;
