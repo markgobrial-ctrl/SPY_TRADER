@@ -78,7 +78,7 @@ async function getPending() {
 
 // ── Scan state (persisted between cron runs via a lock file) ──────────────────
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
-import { promote } from "./shadow.mjs";
+import { promote, loadParams } from "./shadow.mjs";
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
 const HISTORY_FILE = "/root/spy-trader/params-history.jsonl";
@@ -123,22 +123,12 @@ function saveState(s) {
   writeFileSync(STATE_FILE, JSON.stringify(s));
 }
 
-// ── Tunable strategy parameters (SAFE knobs only) ─────────────────────────────
-// These are the ONLY things the learning loop / shadow-test may ever change.
-// Risk controls — position sizing, the 40% stop, the $400 cap, the VIX 16–35
-// safety band, and the SPY-0DTE-only guardrail — are intentionally NOT here;
-// they stay fixed in the prompt and are never auto-tuned. params.json (VPS-local,
-// written only after a change passes the shadow-test) overrides these defaults.
-const DEFAULT_PARAMS = {
-  entryWindowEnd: "11:00", // latest entry time (ET); 9:35 start is fixed
-  minSignals: 2,           // confluence signals required to enter (of 4)
-  deltaLow: 0.45,          // strike-selection delta band, lower bound
-  deltaHigh: 0.55,         // strike-selection delta band, upper bound
-};
-function loadParams() {
-  try { return { ...DEFAULT_PARAMS, ...JSON.parse(readFileSync("/root/spy-trader/params.json", "utf8")) }; }
-  catch { return { ...DEFAULT_PARAMS }; }
-}
+// ── Tunable strategy parameters ───────────────────────────────────────────────
+// PARAMS come from params.json (single source: shadow.mjs loadParams + defaults).
+// You may change ANY of them manually from the dashboard (each is bounds-clamped).
+// The autonomous learning loop, however, may only ever change the four SAFE knobs
+// (entryWindowEnd, minSignals, deltaLow, deltaHigh) — the risk levers are off-limits
+// to auto-tuning and only you can change them. The SPY-0DTE-only guardrail is fixed.
 const PARAMS = loadParams();
 
 // ── Trading system prompt ─────────────────────────────────────────────────────
@@ -154,15 +144,15 @@ EXECUTION SCOPE (CRITICAL — read carefully): You may place BUY and SELL/CLOSE 
 
 Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, intraday VWAP, and the opening-range high/low (the 9:30–9:45 ET range). Get VIX from the FMP MCP "quote" endpoint with symbol "^VIX" — use the "price" field (dayHigh/dayLow/previousClose are also there); this is the working VIX source, do NOT report VIX as unavailable. VIX9D/term-structure data is NOT on the current data plan, so skip the term-structure check entirely (do not block on it). Pull the SPY 0DTE chain WITH greeks (ATM ± a few strikes). (Market internals like NYSE TICK / advance-decline are NOT available on the current data plan — do not attempt to fetch them.) Note any scheduled US econ releases today (CPI, PCE, jobs, FOMC) and their times. Pull open positions and open orders. If a data point isn't available from your tools, note it and proceed — don't block on it.
 
-Step 2 — Trade Window (STRICT): ONLY enter 9:35 AM–${PARAMS.entryWindowEnd} ET. After ${PARAMS.entryWindowEnd}: manage only. After 3:45 PM: close every SPY 0DTE position you hold (SPY 0DTE options ONLY — never touch other holdings).
+Step 2 — Trade Window (STRICT): ONLY enter ${PARAMS.entryWindowStart} AM–${PARAMS.entryWindowEnd} ET. After ${PARAMS.entryWindowEnd}: manage only. After 3:45 PM: close every SPY 0DTE position you hold (SPY 0DTE options ONLY — never touch other holdings).
 
 Step 3 — Setup Requirements:
 (A) REGIME — all must hold:
-- VIX between 16 and 35 (from FMP quote "^VIX", "price" field). This is a HARD filter — if VIX is outside 16–35, do not enter.
+- VIX between ${PARAMS.vixMin} and ${PARAMS.vixMax} (from FMP quote "^VIX", "price" field). This is a HARD filter — if VIX is outside ${PARAMS.vixMin}–${PARAMS.vixMax}, do not enter.
 - VIX term structure: VIX9D is unavailable on the current plan, so this check is skipped. Do not let its absence block a trade.
 - No opposing position open.
 (B) DIRECTIONAL SIGNAL — you need genuine continuation, not just a number. Require AT LEAST ${PARAMS.minSignals} of:
-- SPY >0.4% from open in the trade direction.
+- SPY >${PARAMS.minMovePct}% from open in the trade direction.
 - Price on the correct side of VWAP and holding it (above → calls, below → puts).
 - Opening-range breakout: trading beyond the 9:30–9:45 range in the trade direction.
 - Trend persistence on the 5-min: higher-highs/higher-lows (calls) or lower-lows/lower-highs (puts).
@@ -179,17 +169,17 @@ Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE
 - HARD FLOOR: never buy below |delta| 0.35. Too far OTM = theta/IV-crush trap.
 - Breakeven gate: breakeven = strike + ask (calls) or strike − ask (puts). Estimate expected remaining move from the ATM straddle mid (the market's expected move for the rest of the session). REQUIRE the breakeven to sit within ~70% of that expected remaining move in your direction. If the day can't realistically deliver the move to breakeven, SKIP — do not reach for a cheaper far-OTM strike and hope.
 - Liquidity gate: skip if bid/ask spread > 5% of the option's mid price (replaces the old flat $0.15 rule), or if volume/open interest is thin. Use mid for sizing, ask for the breakeven calc (assume you pay up).
-- When two strikes both qualify, prefer the one with the better reward-to-risk at your 150% target given your 40% stop.
+- When two strikes both qualify, prefer the one with the better reward-to-risk at your ${PARAMS.targetPct}% target given your ${PARAMS.stopPct}% stop.
 
-Step 5 — Size (RISK-BASED, not fixed count): Risk a fixed dollar budget per trade. Risk budget = the smaller of $160 or 8% of account equity. Contracts = floor(riskBudget ÷ (entryPremium × 100 × 0.40)), since your hard stop is 40% of premium. Then clamp to 1–2 contracts, and never exceed $400 total outlay (2 contracts only if premium ≤ $2.00). If account < $1,500: 1 contract max. If even 1 contract would risk more than the budget or cost > $400, pick a cheaper qualifying strike or SKIP — never over-risk.
+Step 5 — Size (RISK-BASED, not fixed count): Your hard stop is ${PARAMS.stopPct}% of premium. Risk budget per trade = the smaller of $160 or 8% of account equity. Contracts = floor(riskBudget ÷ (entryPremium × 100 × ${(PARAMS.stopPct / 100).toFixed(2)})). Then clamp to ${PARAMS.maxContracts} contract(s) max, and NEVER exceed $${PARAMS.maxOutlay} total outlay. If account < $1,500: 1 contract max. If even 1 contract would risk more than the budget or cost > $${PARAMS.maxOutlay}, pick a cheaper qualifying strike or SKIP — never over-risk.
 
 Step 6 — Exits (let winners run, protect gains):
-- TRAILING STOP: once up ≥80%, trail a stop 35% below the position's premium high-water mark; raise it on every new high, exit when hit. This replaces any fixed profit cap and lets moonshots run.
+- TRAILING STOP: once up ≥80%, trail a stop ${PARAMS.trailPct}% below the position's premium high-water mark; raise it on every new high, exit when hit. This replaces any fixed profit cap and lets moonshots run (target zone ~${PARAMS.targetPct}%+).
 - At +100%, the trail must be at/above breakeven — never let a doubled position round-trip to a loss.
 - UNDERLYING-BASED exit: also exit if SPY loses the level that justified the trade (closes back through VWAP or back inside the opening range against you), even if the premium stop hasn't triggered. Price action leads premium.
 - TIME-BASED: after 13:00 ET tighten the trail to 25%; after 14:30 ET take profits readily — theta and pin risk dominate late.
 
-Step 7 — Stop (HARD): Exit at 40% premium loss OR when the underlying invalidates the setup (back through VWAP / opening range against you), whichever comes first. No averaging down, ever.
+Step 7 — Stop (HARD): Exit at ${PARAMS.stopPct}% premium loss OR when the underlying invalidates the setup (back through VWAP / opening range against you), whichever comes first. No averaging down, ever.
 
 Step 8 — Manage every scan: re-check trailing stop, underlying level, and time-of-day for each open SPY 0DTE position. Trail/stop hit → close. Setup invalidated → close. Past 3:45 PM → close all SPY 0DTE positions (SPY 0DTE only — leave every other holding untouched).
 ORDER EXECUTION: use marketable LIMIT orders (price a few cents through the mid), never naked market orders — the 0DTE spread is a tax. Prefer entering on a small pullback toward VWAP over chasing an extended candle.
@@ -218,7 +208,7 @@ SCAN_JSON is a machine-readable snapshot of THIS scan for the learning journal �
 - entry: if you actually ENTERED this scan, {"strike":<n>,"delta":<n>,"contracts":<n>,"premium":<n>}; otherwise null.
 Keep it on ONE line of valid JSON (candidate and entry are the only nested objects).
 
-HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY 9:35–11 AM ET entries. Directional, no spreads. Risk-based sizing, 1–2 contracts, max $400 outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <16 or >35. Need real directional confluence (≥2 signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
+HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY ${PARAMS.entryWindowStart}–${PARAMS.entryWindowEnd} ET entries. Directional, no spreads. Risk-based sizing, ${PARAMS.maxContracts} contract(s) max, max $${PARAMS.maxOutlay} outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <${PARAMS.vixMin} or >${PARAMS.vixMax}. Need real directional confluence (≥${PARAMS.minSignals} signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
 
 // ── Run a Claude Code scan ────────────────────────────────────────────────────
 

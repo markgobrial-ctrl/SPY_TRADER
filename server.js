@@ -20,10 +20,20 @@ const ACCOUNT_NUMBER = process.env.ROBINHOOD_ACCOUNT || "545721409";
 // the agent auto-disables for the rest of the day. Unset/0 = no breaker.
 const DAILY_LOSS_LIMIT = Number(process.env.DAILY_LOSS_LIMIT) || 0;
 
-// The only strategy levers that may be tuned — manually or by the learning loop.
-// Risk controls are never in this list. Validation/clamping is authoritative on
-// the VPS (clampParams); the server just refuses out-of-list keys.
-const SAFE_PARAM_KEYS = ["entryWindowEnd", "minSignals", "deltaLow", "deltaHigh"];
+// Levers the USER may set manually from the app. (The autonomous learning loop
+// is separately restricted to only the four safe knobs in review.mjs — it can
+// never touch the risk levers.) Bounds-clamping is authoritative on the VPS
+// (clampParams); the server just refuses keys outside this list.
+const TUNABLE_PARAM_KEYS = [
+  "entryWindowStart", "entryWindowEnd", "minSignals", "deltaLow", "deltaHigh",
+  "maxContracts", "maxOutlay", "stopPct", "targetPct", "trailPct",
+  "vixMin", "vixMax", "minMovePct", "dailyLossLimit",
+];
+const DEFAULT_STRATEGY_PARAMS = {
+  entryWindowStart: "09:35", entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
+  maxContracts: 2, maxOutlay: 400, stopPct: 40, targetPct: 150, trailPct: 35,
+  vixMin: 16, vixMax: 35, minMovePct: 0.4, dailyLossLimit: 0,
+};
 
 // ── Basic Auth ────────────────────────────────────────────────────────────────
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
@@ -57,7 +67,7 @@ const db = new Low(new JSONFile(dbPath), {
   pendingAction: null,
   lastAccount: null,
   countedCloseIds: [],
-  strategy: { params: { entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55 }, history: [], proposals: [] },
+  strategy: { params: { ...DEFAULT_STRATEGY_PARAMS }, history: [], proposals: [] },
   stats: { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0, realizedTotal: 0, realizedToday: 0, realizedDate: null },
 });
 await db.read();
@@ -68,8 +78,8 @@ db.data.scanInterval ??= 10;
 db.data.pendingAction ??= null;
 db.data.lastAccount  ??= null;
 db.data.countedCloseIds ??= [];
-db.data.strategy ??= { params: { entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55 }, history: [], proposals: [] };
-db.data.strategy.params ??= { entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55 };
+db.data.strategy ??= { params: { ...DEFAULT_STRATEGY_PARAMS }, history: [], proposals: [] };
+db.data.strategy.params = { ...DEFAULT_STRATEGY_PARAMS, ...(db.data.strategy.params || {}) };
 db.data.strategy.history ??= [];
 db.data.strategy.proposals ??= [];
 db.data.stats        ??= { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0 };
@@ -140,11 +150,13 @@ function getETDate() {
 // If the day's realized losses reach the limit, disable the agent so the VPS
 // stops opening new trades for the rest of the session. Protective only.
 function maybeTripLossLimit() {
-  if (!DAILY_LOSS_LIMIT) return;
+  // Limit comes from the strategy lever (user-set) and falls back to the env var.
+  const limit = Number(db.data.strategy?.params?.dailyLossLimit) || DAILY_LOSS_LIMIT;
+  if (!limit) return;
   if (!db.data.agentEnabled) return;
-  if (db.data.stats.realizedToday > -DAILY_LOSS_LIMIT) return;
+  if (db.data.stats.realizedToday > -limit) return;
   db.data.agentEnabled = false;
-  log("warn", `🛑 Daily loss limit hit (${db.data.stats.realizedToday.toFixed(2)} ≤ -${DAILY_LOSS_LIMIT}). Agent auto-disabled for the day.`);
+  log("warn", `🛑 Daily loss limit hit (${db.data.stats.realizedToday.toFixed(2)} ≤ -${limit}). Agent auto-disabled for the day.`);
   broadcast("enabled", false);
   broadcast("emergency", true);
 }
@@ -297,8 +309,8 @@ app.get("/api/strategy", (req, res) => res.json(db.data.strategy));
 app.post("/api/params", async (req, res) => {
   const incoming = req.body && req.body.change ? req.body.change : req.body || {};
   const change = {};
-  for (const k of SAFE_PARAM_KEYS) if (incoming[k] !== undefined && incoming[k] !== null) change[k] = incoming[k];
-  if (!Object.keys(change).length) return res.status(400).json({ error: "No valid params (allowed: " + SAFE_PARAM_KEYS.join(", ") + ")" });
+  for (const k of TUNABLE_PARAM_KEYS) if (incoming[k] !== undefined && incoming[k] !== null) change[k] = incoming[k];
+  if (!Object.keys(change).length) return res.status(400).json({ error: "No valid params (allowed: " + TUNABLE_PARAM_KEYS.join(", ") + ")" });
   db.data.pendingAction = { type: "set_params", change, at: Date.now() };
   await queueWrite();
   log("info", `🛠 Manual param change requested: ${JSON.stringify(change)} — VPS will apply & clamp`);
