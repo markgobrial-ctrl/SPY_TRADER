@@ -23,8 +23,14 @@
 import { readFileSync, existsSync, writeFileSync, appendFileSync } from "fs";
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
-const PARAMS_FILE = "/root/spy-trader/params.json";
+const MANUAL_FILE = "/root/spy-trader/manual.json";   // user overrides (any lever)
+const LEARNED_FILE = "/root/spy-trader/learned.json"; // auto-tuner overrides (safe keys only)
 const HISTORY_FILE = "/root/spy-trader/params-history.jsonl";
+
+function readJson(f) { try { return JSON.parse(readFileSync(f, "utf8")); } catch { return {}; } }
+function writeJson(f, o) { writeFileSync(f, JSON.stringify(o, null, 2)); }
+function pick(obj, keys) { const o = {}; for (const k of keys) if (obj[k] !== undefined) o[k] = obj[k]; return o; }
+function logHistory(meta) { try { appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), etDate: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), ...meta }) + "\n"); } catch {} }
 export const DEFAULT_PARAMS = {
   entryWindowStart: "09:35", entryWindowEnd: "11:00",
   minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
@@ -74,23 +80,58 @@ export function clampParams(p) {
   return out;
 }
 
-// Apply a promotion: clamp, write params.json, append an audit record.
-export function promote(proposed, meta = {}) {
-  const from = loadParams();
-  const to = clampParams(proposed);
-  writeFileSync(PARAMS_FILE, JSON.stringify(to, null, 2));
-  try { appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), etDate: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), from, to, ...meta }) + "\n"); } catch {}
-  return to;
-}
-
 // Promotion gates — a proposal must clear ALL of these to auto-apply.
 const MIN_ENTRIES = 25;      // need at least this many evaluated hypothetical entries
 const MIN_EDGE_PP = 5;       // proposed avg return must beat current by ≥5 percentage points
-const STOP = -0.40, TARGET = 1.50;
 
+// ── Layered params: baseline (code) ◄ learned (auto) ◄ manual (user) ──────────
+export function loadLayers() {
+  return { baseline: { ...DEFAULT_PARAMS }, learned: readJson(LEARNED_FILE), manual: readJson(MANUAL_FILE) };
+}
 export function loadParams() {
-  try { return { ...DEFAULT_PARAMS, ...JSON.parse(readFileSync(PARAMS_FILE, "utf8")) }; }
-  catch { return { ...DEFAULT_PARAMS }; }
+  const L = loadLayers();
+  return { ...L.baseline, ...L.learned, ...L.manual };
+}
+// Per-lever provenance: "manual" | "learned" | "baseline".
+export function paramSources() {
+  const L = loadLayers(), out = {};
+  for (const k of Object.keys(DEFAULT_PARAMS)) out[k] = (k in L.manual) ? "manual" : (k in L.learned) ? "learned" : "baseline";
+  return out;
+}
+
+// User sets levers by hand. Clamp the merged result, store the touched keys in
+// the manual layer (so they pin against the auto-tuner). Returns effective params.
+export function setManual(change, meta = {}) {
+  const L = loadLayers();
+  const merged = clampParams({ ...L.baseline, ...L.learned, ...L.manual, ...change });
+  const manual = { ...L.manual, ...pick(merged, Object.keys(change)) };
+  writeJson(MANUAL_FILE, manual);
+  logHistory({ layer: "manual", change: pick(merged, Object.keys(change)), source: meta.source || "manual" });
+  return loadParams();
+}
+
+// Auto-tuner applies a learned change (safe keys only).
+export function setLearned(change, meta = {}) {
+  const L = loadLayers();
+  const safe = pick(change, AUTO_KEYS);
+  const merged = clampParams({ ...L.baseline, ...L.learned, ...safe });
+  const learned = { ...L.learned, ...pick(merged, Object.keys(safe)) };
+  writeJson(LEARNED_FILE, learned);
+  logHistory({ layer: "learned", change: pick(merged, Object.keys(safe)), source: meta.source || "auto", edge: meta.edge });
+  return loadParams();
+}
+// Back-compat name used by the shadow-test CLI.
+export const promote = (proposed, meta = {}) => setLearned(proposed, meta);
+
+// Reset levers to baseline by removing them from BOTH override layers.
+// keys empty/null = reset everything.
+export function resetParams(keys, meta = {}) {
+  const L = loadLayers();
+  if (!keys || !keys.length) { writeJson(MANUAL_FILE, {}); writeJson(LEARNED_FILE, {}); logHistory({ layer: "reset", change: "all", source: meta.source || "reset" }); return loadParams(); }
+  for (const k of keys) { delete L.manual[k]; delete L.learned[k]; }
+  writeJson(MANUAL_FILE, L.manual); writeJson(LEARNED_FILE, L.learned);
+  logHistory({ layer: "reset", change: keys, source: meta.source || "reset" });
+  return loadParams();
 }
 
 export function loadJournal(days = 60) {
@@ -174,9 +215,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     : wins ? `PROPOSED WINS by ${edge.toFixed(1)}pp avg return` : `HOLD — not a clear improvement (edge ${edge.toFixed(1)}pp, need ≥${MIN_EDGE_PP}pp)`}`);
 
   if (wins && process.env.AUTO_PROMOTE === "1") {
-    const applied = promote(proposed, { edge: Math.round(edge * 10) / 10, source: "shadow-cli" });
-    console.log(`PROMOTED → wrote ${PARAMS_FILE}: ${JSON.stringify(applied)}. Agent uses it on the next scan.`);
+    promote(override, { edge: Math.round(edge * 10) / 10, source: "shadow-cli" });
+    console.log(`PROMOTED → wrote learned.json (safe keys only). Agent uses it on the next scan.`);
   } else if (wins) {
-    console.log(`(Set AUTO_PROMOTE=1 to apply, or write params.json yourself.)`);
+    console.log(`(Set AUTO_PROMOTE=1 to apply to the learned layer.)`);
   }
 }

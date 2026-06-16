@@ -78,7 +78,7 @@ async function getPending() {
 
 // ── Scan state (persisted between cron runs via a lock file) ──────────────────
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
-import { promote, loadParams } from "./shadow.mjs";
+import { loadParams, paramSources, loadLayers, setManual, resetParams } from "./shadow.mjs";
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
 const HISTORY_FILE = "/root/spy-trader/params-history.jsonl";
@@ -309,7 +309,12 @@ const { enabled, interval, action } = await getPending();
 // show them and the user can see what's being tried (cheap; no Claude call).
 async function pushStrategy() {
   try {
-    await push({ strategy: { params: loadParams(), history: readJsonl(HISTORY_FILE), proposals: readJsonl(PROPOSALS_FILE) } });
+    const L = loadLayers();
+    await push({ strategy: {
+      params: loadParams(), sources: paramSources(),
+      manual: L.manual, learned: L.learned,
+      history: readJsonl(HISTORY_FILE), proposals: readJsonl(PROPOSALS_FILE),
+    } });
   } catch (e) { console.error("Strategy push failed:", e.message); }
 }
 
@@ -320,9 +325,14 @@ if (action) {
   } else if (action.type === "scan") {
     await runScan(action.instruction || null);
   } else if (action.type === "set_params") {
-    // Manual lever change from the dashboard — clamp to the safe box, write, log.
-    const applied = promote(action.change || {}, { source: "manual" });
-    await push({ type: "info", content: `🛠 Strategy levers updated manually → ${JSON.stringify(applied)}` });
+    // Manual lever change from the dashboard — clamp + write to the MANUAL layer.
+    setManual(action.change || {}, { source: "manual" });
+    await push({ type: "info", content: `🛠 Strategy levers set manually: ${JSON.stringify(action.change || {})}` });
+    await pushStrategy();
+    process.exit(0);
+  } else if (action.type === "reset_params") {
+    const eff = resetParams(action.keys, { source: "reset" });
+    await push({ type: "info", content: `↺ Levers reset to baseline${action.keys && action.keys.length ? " (" + action.keys.join(", ") + ")" : " (all)"}` });
     await pushStrategy();
     process.exit(0);
   }

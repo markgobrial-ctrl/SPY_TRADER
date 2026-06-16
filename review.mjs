@@ -235,10 +235,10 @@ if (!Object.keys(safeChange).length) {
   // enabled AND the shadow-test clears the gates. Risk params can never be here.
   const autoPromoted = wins && process.env.AUTO_PROMOTE === "1";
   if (autoPromoted) {
-    const applied = promote(proposed, { edge: Math.round(edge * 10) / 10, source: "weekly-review", rationale: proposalRaw?.rationale });
-    verdictBlock += `\n_PROMOTED (auto): params.json → ${JSON.stringify(applied)}. Agent uses the new params next scan. Revert anytime by deleting params.json on the VPS._\n`;
-    dashVerdict += " — PROMOTED (auto)";
-    await push({ type: "warn", content: `⚙️ Strategy auto-updated after shadow-test → ${JSON.stringify(applied)}. (Delete params.json on the VPS to revert.)` });
+    promote(safeChange, { edge: Math.round(edge * 10) / 10, source: "weekly-review", rationale: proposalRaw?.rationale });
+    verdictBlock += `\n_PROMOTED (auto) to the LEARNED layer: ${JSON.stringify(safeChange)}. Agent uses it next scan. Revert from the dashboard Strategy tab (Reset) anytime._\n`;
+    dashVerdict += " — PROMOTED (auto, learned)";
+    await push({ type: "warn", content: `⚙️ Strategy auto-tuned (learned layer) → ${JSON.stringify(safeChange)}. Reset from the Strategy tab to revert.` });
   }
 
   // Log every proposal + verdict so the dashboard can show what was tried/worked.

@@ -4,4 +4,6 @@ data/
 journal.jsonl
 reviews/
 params.json
+manual.json
+learned.json
 *.log

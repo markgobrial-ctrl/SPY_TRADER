@@ -225,6 +225,10 @@
     .lever-val { min-width: 52px; text-align: center; font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
     .lever-val.changed { color: var(--amber); }
     .mini-risk { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--red); background: var(--red-bg); padding: 1px 5px; border-radius: 4px; vertical-align: middle; }
+    .lever-reset { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border2); background: transparent; color: var(--sub); font-size: 14px; cursor: pointer; font-family: inherit; }
+    .lever-reset:active { background: var(--card2); }
+    .lever-reset-all { padding: 6px 11px; border-radius: 8px; border: 1px solid var(--border2); background: var(--card2); color: var(--sub); font-size: 11.5px; font-weight: 600; cursor: pointer; font-family: inherit; flex-shrink: 0; }
+    .lever .chip { font-size: 9px; padding: 1px 6px; vertical-align: middle; }
     .hist { background: var(--card2); border: 1px solid var(--border); border-radius: 11px; padding: 10px 12px; margin-top: 8px; }
     .hist:first-child { margin-top: 0; }
     .hist-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
@@ -339,10 +343,13 @@
         <div class="card-head"><span class="card-title">Strategy Levers</span><span class="card-title" id="lever-dirty" style="color:var(--amber);display:none;">edited</span></div>
         <div id="levers"></div>
         <div style="display:flex;gap:10px;margin-top:14px;">
-          <button class="act" id="lever-reset" onclick="resetLevers()" style="flex:1;">Reset</button>
+          <button class="act" id="lever-cancel" onclick="cancelEdits()" style="flex:1;">Cancel</button>
           <button class="act" id="lever-apply" onclick="applyLevers()" style="flex:2;border-color:rgba(91,157,255,.4);background:var(--blue-bg);color:var(--blue);">Apply changes</button>
         </div>
-        <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;">Only these safe levers are tunable. Sizing, stops, the $400 cap, the VIX band and the SPY-0DTE guardrail are fixed and can't be changed here.</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;gap:8px;">
+          <span style="font-size:11px;color:var(--muted);line-height:1.5;"><span class="chip chip-amber">Default</span> baseline · <span class="chip chip-green">Learned</span> auto-tuned · <span class="chip chip-blue">Manual</span> you. Manual pins against the auto-tuner.</span>
+          <button class="lever-reset-all" onclick="resetAll()">Reset all ↺</button>
+        </div>
       </div>
 
       <div class="card">
@@ -372,6 +379,9 @@ let nextScanAt = null, countdownTimer = null;
 let logs = [], trades = [], lastStats = {}, lastAccount = null;
 let ACCOUNT = "—", es = null, unseenLogs = 0, acctTimer = null;
 let strategy = null, leverEdits = null;
+
+const BASELINE = { entryWindowStart:"09:35", entryWindowEnd:"11:00", minSignals:2, deltaLow:0.45, deltaHigh:0.55, maxContracts:2, maxOutlay:400, stopPct:40, targetPct:150, trailPct:35, vixMin:16, vixMax:35, minMovePct:0.4, dailyLossLimit:0 };
+const SRC_CHIP = { manual:["chip-blue","Manual"], learned:["chip-green","Learned"], baseline:["chip-amber","Default"] };
 
 const LEVERS = [
   { key: "entryWindowStart", label: "Entry window starts", type: "time", min: "09:35", max: "10:30", step: 5,  hint: "Earliest new entry (auto only changes the end)", auto: false },
@@ -626,13 +636,22 @@ function stepLever(key, dir) {
   if (leverEdits.deltaHigh <= leverEdits.deltaLow) leverEdits.deltaHigh = Math.round((leverEdits.deltaLow+0.05)*100)/100;
   renderStrategy();
 }
-function resetLevers() { leverEdits = null; renderStrategy(); }
+function cancelEdits() { leverEdits = null; renderStrategy(); }
 async function applyLevers() {
   if (!leverEdits) return;
   const change = { ...leverEdits };
   await fetch("/api/params", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ change }) });
   flash("🛠 Strategy change sent — agent will apply within a minute");
   leverEdits = null; renderStrategy();
+}
+async function resetLever(key) {
+  await fetch("/api/params/reset", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ keys:[key] }) });
+  flash("↺ Reset " + key + " to default — applying shortly");
+}
+async function resetAll() {
+  if (!confirm("Reset ALL levers to the conservative baseline? This clears your manual settings and the learned tuning.")) return;
+  await fetch("/api/params/reset", { method:"POST", headers:{"Content-Type":"application/json"}, body: "{}" });
+  flash("↺ Resetting all levers to baseline — applying shortly");
 }
 
 const STATUS_CHIP = { promoted:["chip-green","Promoted"], candidate:["chip-green","Passed"], hold:["chip-red","Held"], insufficient:["chip-amber","Need data"], none:["chip-amber","No change"] };
@@ -642,9 +661,18 @@ function renderStrategy() {
   document.getElementById("lever-dirty").style.display = dirty ? "inline" : "none";
   document.getElementById("levers").innerHTML = LEVERS.map(L => {
     const v = edit[L.key] ?? cur[L.key], changed = dirty && String(edit[L.key])!==String(cur[L.key]);
+    const src = (strategy && strategy.sources && strategy.sources[L.key]) || "baseline";
+    const [scls, slabel] = SRC_CHIP[src] || SRC_CHIP.baseline;
+    const overridden = src !== "baseline";
+    const baseNote = overridden ? ` · default ${fmtLever(L, BASELINE[L.key])}` : "";
+    const resetBtn = overridden && !dirty ? `<button class="lever-reset" title="Reset to default" onclick="resetLever('${L.key}')">↺</button>` : "";
     return `<div class="lever">
-      <div class="lever-info"><div class="lever-label">${L.label}${L.risk?' <span class="mini-risk">risk</span>':''}</div><div class="lever-hint">${L.hint}</div></div>
+      <div class="lever-info">
+        <div class="lever-label">${L.label}${L.risk?' <span class="mini-risk">risk</span>':''} <span class="chip ${scls}">${slabel}</span></div>
+        <div class="lever-hint">${L.hint}${baseNote}</div>
+      </div>
       <div class="lever-ctrl">
+        ${resetBtn}
         <button class="step" onclick="stepLever('${L.key}',-1)">−</button>
         <span class="lever-val ${changed?'changed':''}">${fmtLever(L, v)}</span>
         <button class="step" onclick="stepLever('${L.key}',1)">+</button>

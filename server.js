@@ -67,7 +67,7 @@ const db = new Low(new JSONFile(dbPath), {
   pendingAction: null,
   lastAccount: null,
   countedCloseIds: [],
-  strategy: { params: { ...DEFAULT_STRATEGY_PARAMS }, history: [], proposals: [] },
+  strategy: { params: { ...DEFAULT_STRATEGY_PARAMS }, sources: {}, manual: {}, learned: {}, history: [], proposals: [] },
   stats: { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0, realizedTotal: 0, realizedToday: 0, realizedDate: null },
 });
 await db.read();
@@ -78,8 +78,11 @@ db.data.scanInterval ??= 10;
 db.data.pendingAction ??= null;
 db.data.lastAccount  ??= null;
 db.data.countedCloseIds ??= [];
-db.data.strategy ??= { params: { ...DEFAULT_STRATEGY_PARAMS }, history: [], proposals: [] };
+db.data.strategy ??= { params: { ...DEFAULT_STRATEGY_PARAMS }, sources: {}, manual: {}, learned: {}, history: [], proposals: [] };
 db.data.strategy.params = { ...DEFAULT_STRATEGY_PARAMS, ...(db.data.strategy.params || {}) };
+db.data.strategy.sources ??= {};
+db.data.strategy.manual ??= {};
+db.data.strategy.learned ??= {};
 db.data.strategy.history ??= [];
 db.data.strategy.proposals ??= [];
 db.data.stats        ??= { totalScans: 0, totalTrades: 0, wins: 0, startingCapital: 2000, currentPnL: 0 };
@@ -317,6 +320,15 @@ app.post("/api/params", async (req, res) => {
   res.json({ ok: true, change });
 });
 
+// Reset levers to baseline (specific keys, or all if none given).
+app.post("/api/params/reset", async (req, res) => {
+  const keys = Array.isArray(req.body && req.body.keys) ? req.body.keys.filter(k => TUNABLE_PARAM_KEYS.includes(k)) : null;
+  db.data.pendingAction = { type: "reset_params", keys, at: Date.now() };
+  await queueWrite();
+  log("info", `↺ Param reset requested: ${keys && keys.length ? keys.join(", ") : "all to baseline"}`);
+  res.json({ ok: true, keys });
+});
+
 // ── Account data (pushed by VPS, served from DB) ─────────────────────────────
 app.get("/api/account", (req, res) => {
   if (!db.data.lastAccount) return res.status(503).json({ error: "No account data yet — VPS hasn't pushed data" });
@@ -337,6 +349,9 @@ app.post("/api/push", async (req, res) => {
   // VPS reports the live strategy params + change history + proposal log.
   if (strategy && typeof strategy === "object") {
     if (strategy.params) db.data.strategy.params = strategy.params;
+    if (strategy.sources) db.data.strategy.sources = strategy.sources;
+    if (strategy.manual) db.data.strategy.manual = strategy.manual;
+    if (strategy.learned) db.data.strategy.learned = strategy.learned;
     if (Array.isArray(strategy.history)) db.data.strategy.history = strategy.history.slice(-50);
     if (Array.isArray(strategy.proposals)) db.data.strategy.proposals = strategy.proposals.slice(-50);
     broadcast("strategy", db.data.strategy);
