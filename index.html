@@ -214,6 +214,9 @@
     .nav-badge { position: absolute; top: 6px; right: calc(50% - 22px); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--blue); color: #fff; font-size: 10px; font-weight: 800; display: none; align-items: center; justify-content: center; }
 
     /* ── Strategy tab ── */
+    .lever-group { font-size: 11px; font-weight: 700; color: var(--blue); text-transform: uppercase; letter-spacing: .08em; margin: 16px 0 2px; }
+    .lever-group:first-child { margin-top: 0; }
+    .lever-default { font-size: 10.5px; color: var(--muted); background: var(--card2); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
     .lever { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
     .lever:last-child { border-bottom: none; }
     .lever-info { flex: 1; min-width: 0; }
@@ -347,7 +350,7 @@
           <button class="act" id="lever-apply" onclick="applyLevers()" style="flex:2;border-color:rgba(91,157,255,.4);background:var(--blue-bg);color:var(--blue);">Apply changes</button>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;gap:8px;">
-          <span style="font-size:11px;color:var(--muted);line-height:1.5;"><span class="chip chip-amber">Default</span> baseline · <span class="chip chip-green">Learned</span> auto-tuned · <span class="chip chip-blue">Manual</span> you. Manual pins against the auto-tuner.</span>
+          <span style="font-size:11px;color:var(--muted);line-height:1.5;"><span class="chip chip-amber">Default</span> baseline · <span class="chip chip-green">Learned</span> auto-tuned · <span class="chip chip-blue">Manual</span> you. The ↺ buttons reset instantly — no Apply needed.</span>
           <button class="lever-reset-all" onclick="resetAll()">Reset all ↺</button>
         </div>
       </div>
@@ -378,26 +381,31 @@ let agentEnabled = false, scanning = false, currentInterval = 10;
 let nextScanAt = null, countdownTimer = null;
 let logs = [], trades = [], lastStats = {}, lastAccount = null;
 let ACCOUNT = "—", es = null, unseenLogs = 0, acctTimer = null;
-let strategy = null, leverEdits = null;
+let strategy = null, leverEdits = null, applying = false, applyTimer = null;
 
 const BASELINE = { entryWindowStart:"09:35", entryWindowEnd:"11:00", minSignals:2, deltaLow:0.45, deltaHigh:0.55, maxContracts:2, maxOutlay:400, stopPct:40, targetPct:150, trailPct:35, vixMin:16, vixMax:35, minMovePct:0.4, dailyLossLimit:0 };
 const SRC_CHIP = { manual:["chip-blue","Manual"], learned:["chip-green","Learned"], baseline:["chip-amber","Default"] };
 
 const LEVERS = [
-  { key: "entryWindowStart", label: "Entry window starts", type: "time", min: "09:35", max: "10:30", step: 5,  hint: "Earliest new entry (auto only changes the end)", auto: false },
-  { key: "entryWindowEnd",   label: "Entry window ends",   type: "time", min: "10:00", max: "11:30", step: 15, hint: "Latest time to open a new trade", auto: true },
-  { key: "minSignals",       label: "Signals required",    type: "int",  min: 1, max: 4, step: 1, hint: "Confluence signals to enter (1=aggressive)", auto: true },
-  { key: "deltaLow",         label: "Delta band — low",    type: "num",  min: 0.30, max: 0.65, step: 0.05, hint: "Strike-selection delta band, lower", auto: true },
-  { key: "deltaHigh",        label: "Delta band — high",   type: "num",  min: 0.35, max: 0.75, step: 0.05, hint: "Strike-selection delta band, upper", auto: true },
-  { key: "maxContracts",     label: "Max contracts",       type: "int",  min: 1, max: 5, step: 1, hint: "Position-size cap", auto: false, risk: true },
-  { key: "maxOutlay",        label: "Max outlay",          type: "int",  min: 100, max: 1500, step: 50, prefix: "$", hint: "Max $ risked per trade", auto: false, risk: true },
-  { key: "stopPct",          label: "Stop loss",           type: "int",  min: 20, max: 60, step: 5, suffix: "%", hint: "Premium-loss exit", auto: false, risk: true },
-  { key: "targetPct",        label: "Profit target",       type: "int",  min: 80, max: 300, step: 10, suffix: "%", hint: "Take-profit target", auto: false },
-  { key: "trailPct",         label: "Trailing stop",       type: "int",  min: 20, max: 50, step: 5, suffix: "%", hint: "Trail off the high-water mark", auto: false },
-  { key: "vixMin",           label: "VIX min",             type: "int",  min: 10, max: 25, step: 1, hint: "Regime floor", auto: false },
-  { key: "vixMax",           label: "VIX max",             type: "int",  min: 25, max: 50, step: 1, hint: "Regime ceiling", auto: false },
-  { key: "minMovePct",       label: "Min SPY move",        type: "num",  min: 0.2, max: 1.0, step: 0.1, suffix: "%", hint: "Momentum threshold to enter", auto: false },
-  { key: "dailyLossLimit",   label: "Daily loss limit",    type: "int",  min: 0, max: 1000, step: 25, prefix: "$", hint: "Auto-disable after this realized loss (0=off)", auto: false, risk: true },
+  { group: "When it trades", key: "entryWindowStart", label: "Start trading at", type: "time", min: "09:35", max: "10:30", step: 5,  hint: "Earliest it opens a trade. Later = skip the choppy first minutes." },
+  { group: "When it trades", key: "entryWindowEnd",   label: "Stop opening at",  type: "time", min: "10:00", max: "11:30", step: 15, hint: "Latest it opens a new trade. Earlier = avoid midday chop.", auto: true },
+  { group: "When it trades", key: "minMovePct",       label: "Min move to enter", type: "num", min: 0.2, max: 1.0, step: 0.1, suffix: "%", hint: "SPY must be at least this far from the open. Higher = wait for stronger moves (fewer trades)." },
+
+  { group: "How picky", key: "minSignals", label: "Signals needed", type: "int", min: 1, max: 4, step: 1, hint: "Confirmations required before entering, out of 4. Higher = pickier, fewer but better trades. Lower = more trades, more risk.", auto: true },
+  { group: "How picky", key: "vixMin", label: "Only trade if VIX ≥", type: "int", min: 10, max: 25, step: 1, hint: "Skip when volatility is too calm to move. Below ~16 = sleepy market." },
+  { group: "How picky", key: "vixMax", label: "Only trade if VIX ≤", type: "int", min: 25, max: 50, step: 1, hint: "Skip when volatility is too wild/risky. Above ~35 = chaos." },
+
+  { group: "Which option", key: "deltaLow",  label: "Strike — min delta", type: "num", min: 0.30, max: 0.65, step: 0.05, hint: "Lower = cheaper, more lottery-like (further out-of-the-money).", auto: true },
+  { group: "Which option", key: "deltaHigh", label: "Strike — max delta", type: "num", min: 0.35, max: 0.75, step: 0.05, hint: "Higher = closer to at-the-money: steadier but pricier.", auto: true },
+
+  { group: "Position size", key: "maxContracts", label: "Max contracts", type: "int", min: 1, max: 5, step: 1, hint: "Biggest position it can take. Higher = more money at risk per trade.", risk: true },
+  { group: "Position size", key: "maxOutlay", label: "Max $ per trade", type: "int", min: 100, max: 1500, step: 50, prefix: "$", hint: "Hard cap on what a single trade can cost — your max loss per trade.", risk: true },
+
+  { group: "Exits", key: "stopPct", label: "Cut losers at", type: "int", min: 20, max: 60, step: 5, suffix: "%", hint: "Sell once down this % on the option. Lower = cut fast (more whipsaws). Higher = more room (bigger losses).", risk: true },
+  { group: "Exits", key: "targetPct", label: "Profit target", type: "int", min: 80, max: 300, step: 10, suffix: "%", hint: "Aim for this % gain. Higher = swing for bigger wins (hit less often)." },
+  { group: "Exits", key: "trailPct", label: "Trailing stop", type: "int", min: 20, max: 50, step: 5, suffix: "%", hint: "How far it can fall back from its peak before selling. Tighter = lock gains sooner." },
+
+  { group: "Safety brake", key: "dailyLossLimit", label: "Daily loss limit", type: "int", min: 0, max: 1000, step: 25, prefix: "$", hint: "Auto-stop for the day after losing this much. $0 = off. A hard brake on a bad day.", risk: true },
 ];
 
 /* ── Connection ── */
@@ -414,7 +422,7 @@ function connect() {
     updateStats(); updateAgent(); renderLogs(); renderTrades();
     refreshAccount();
   });
-  es.addEventListener("strategy", e => { strategy = JSON.parse(e.data); if (!leverEdits) renderStrategy(); });
+  es.addEventListener("strategy", e => { strategy = JSON.parse(e.data); if (applying) { applying = false; leverEdits = null; clearTimeout(applyTimer); } renderStrategy(); });
   es.addEventListener("log",   e => { const x = JSON.parse(e.data); logs.unshift(x); if(logs.length>200)logs.pop(); prependLog(x); if(currentScreen!=="activity"){ unseenLogs++; updateBadge(); } });
   es.addEventListener("trade", e => { trades.unshift(JSON.parse(e.data)); renderTrades(); refreshAccount(true); });
   es.addEventListener("stats", e => { lastStats = JSON.parse(e.data); updateStats(); });
@@ -621,6 +629,7 @@ function timeToMin(t){ const [h,m]=String(t).split(":").map(Number); return h*60
 function minToTime(m){ return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0"); }
 
 function stepLever(key, dir) {
+  if (applying) return;
   const L = LEVERS.find(x=>x.key===key);
   if (!leverEdits) leverEdits = { ...curParams() };
   if (L.type === "time") {
@@ -636,46 +645,65 @@ function stepLever(key, dir) {
   if (leverEdits.deltaHigh <= leverEdits.deltaLow) leverEdits.deltaHigh = Math.round((leverEdits.deltaLow+0.05)*100)/100;
   renderStrategy();
 }
-function cancelEdits() { leverEdits = null; renderStrategy(); }
+function cancelEdits() { if (applying) return; leverEdits = null; renderStrategy(); }
+function startApplying() {
+  applying = true; clearTimeout(applyTimer);
+  // Optimistic: keep showing the chosen values with an "applying" badge. Fall
+  // back to whatever the agent reports if no confirmation lands in ~2 min.
+  applyTimer = setTimeout(() => { applying = false; leverEdits = null; renderStrategy(); }, 120000);
+  renderStrategy();
+}
 async function applyLevers() {
-  if (!leverEdits) return;
+  if (!leverEdits || applying) return;
   const change = { ...leverEdits };
+  startApplying();
   await fetch("/api/params", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ change }) });
-  flash("🛠 Strategy change sent — agent will apply within a minute");
-  leverEdits = null; renderStrategy();
 }
 async function resetLever(key) {
+  if (applying) return;
+  leverEdits = null; startApplying();
   await fetch("/api/params/reset", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ keys:[key] }) });
-  flash("↺ Reset " + key + " to default — applying shortly");
 }
 async function resetAll() {
+  if (applying) return;
   if (!confirm("Reset ALL levers to the conservative baseline? This clears your manual settings and the learned tuning.")) return;
+  leverEdits = null; startApplying();
   await fetch("/api/params/reset", { method:"POST", headers:{"Content-Type":"application/json"}, body: "{}" });
-  flash("↺ Resetting all levers to baseline — applying shortly");
 }
 
 const STATUS_CHIP = { promoted:["chip-green","Promoted"], candidate:["chip-green","Passed"], hold:["chip-red","Held"], insufficient:["chip-amber","Need data"], none:["chip-amber","No change"] };
 function renderStrategy() {
   if (!document.getElementById("levers")) return;
   const cur = curParams(), edit = leverEdits || cur, dirty = !!leverEdits;
-  document.getElementById("lever-dirty").style.display = dirty ? "inline" : "none";
+  // status badge + apply/cancel state
+  const badge = document.getElementById("lever-dirty");
+  badge.style.display = (dirty || applying) ? "inline" : "none";
+  badge.textContent = applying ? "applying…" : "edited";
+  badge.style.color = applying ? "var(--blue)" : "var(--amber)";
+  const applyBtn = document.getElementById("lever-apply"), cancelBtn = document.getElementById("lever-cancel");
+  if (applyBtn) { applyBtn.textContent = applying ? "Applying…" : "Apply changes"; applyBtn.style.opacity = (dirty && !applying) ? "1" : ".5"; }
+  if (cancelBtn) cancelBtn.style.opacity = (dirty && !applying) ? "1" : ".5";
+
+  let lastGroup = "";
   document.getElementById("levers").innerHTML = LEVERS.map(L => {
     const v = edit[L.key] ?? cur[L.key], changed = dirty && String(edit[L.key])!==String(cur[L.key]);
     const src = (strategy && strategy.sources && strategy.sources[L.key]) || "baseline";
     const [scls, slabel] = SRC_CHIP[src] || SRC_CHIP.baseline;
     const overridden = src !== "baseline";
-    const baseNote = overridden ? ` · default ${fmtLever(L, BASELINE[L.key])}` : "";
-    const resetBtn = overridden && !dirty ? `<button class="lever-reset" title="Reset to default" onclick="resetLever('${L.key}')">↺</button>` : "";
-    return `<div class="lever">
+    const baseNote = overridden ? `<span class="lever-default">default ${fmtLever(L, BASELINE[L.key])}</span>` : "";
+    const resetBtn = overridden && !dirty && !applying ? `<button class="lever-reset" title="Reset to default" onclick="resetLever('${L.key}')">↺</button>` : "";
+    const dis = applying ? "disabled style=\"opacity:.4;pointer-events:none\"" : "";
+    const head = L.group !== lastGroup ? (lastGroup = L.group, `<div class="lever-group">${L.group}</div>`) : "";
+    return `${head}<div class="lever">
       <div class="lever-info">
         <div class="lever-label">${L.label}${L.risk?' <span class="mini-risk">risk</span>':''} <span class="chip ${scls}">${slabel}</span></div>
-        <div class="lever-hint">${L.hint}${baseNote}</div>
+        <div class="lever-hint">${L.hint} ${baseNote}</div>
       </div>
       <div class="lever-ctrl">
         ${resetBtn}
-        <button class="step" onclick="stepLever('${L.key}',-1)">−</button>
+        <button class="step" ${dis} onclick="stepLever('${L.key}',-1)">−</button>
         <span class="lever-val ${changed?'changed':''}">${fmtLever(L, v)}</span>
-        <button class="step" onclick="stepLever('${L.key}',1)">+</button>
+        <button class="step" ${dis} onclick="stepLever('${L.key}',1)">+</button>
       </div>
     </div>`;
   }).join("");
