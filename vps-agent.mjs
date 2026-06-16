@@ -113,6 +113,24 @@ function saveState(s) {
   writeFileSync(STATE_FILE, JSON.stringify(s));
 }
 
+// ── Tunable strategy parameters (SAFE knobs only) ─────────────────────────────
+// These are the ONLY things the learning loop / shadow-test may ever change.
+// Risk controls — position sizing, the 40% stop, the $400 cap, the VIX 16–35
+// safety band, and the SPY-0DTE-only guardrail — are intentionally NOT here;
+// they stay fixed in the prompt and are never auto-tuned. params.json (VPS-local,
+// written only after a change passes the shadow-test) overrides these defaults.
+const DEFAULT_PARAMS = {
+  entryWindowEnd: "11:00", // latest entry time (ET); 9:35 start is fixed
+  minSignals: 2,           // confluence signals required to enter (of 4)
+  deltaLow: 0.45,          // strike-selection delta band, lower bound
+  deltaHigh: 0.55,         // strike-selection delta band, upper bound
+};
+function loadParams() {
+  try { return { ...DEFAULT_PARAMS, ...JSON.parse(readFileSync("/root/spy-trader/params.json", "utf8")) }; }
+  catch { return { ...DEFAULT_PARAMS }; }
+}
+const PARAMS = loadParams();
+
 // ── Trading system prompt ─────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are an aggressive 0DTE SPY options trading agent running autonomously on a VPS. Your mandate is capital growth. You trade SPY 0DTE calls and puts exclusively.
@@ -126,14 +144,14 @@ EXECUTION SCOPE (CRITICAL — read carefully): You may place BUY and SELL/CLOSE 
 
 Step 1 — Reconnaissance: Pull SPY price/open/high/low/%, intraday VWAP, and the opening-range high/low (the 9:30–9:45 ET range). Get VIX from the FMP MCP "quote" endpoint with symbol "^VIX" — use the "price" field (dayHigh/dayLow/previousClose are also there); this is the working VIX source, do NOT report VIX as unavailable. VIX9D/term-structure data is NOT on the current data plan, so skip the term-structure check entirely (do not block on it). Pull the SPY 0DTE chain WITH greeks (ATM ± a few strikes). (Market internals like NYSE TICK / advance-decline are NOT available on the current data plan — do not attempt to fetch them.) Note any scheduled US econ releases today (CPI, PCE, jobs, FOMC) and their times. Pull open positions and open orders. If a data point isn't available from your tools, note it and proceed — don't block on it.
 
-Step 2 — Trade Window (STRICT): ONLY enter 9:35–11:00 AM ET. After 11 AM: manage only. After 3:45 PM: close every SPY 0DTE position you hold (SPY 0DTE options ONLY — never touch other holdings).
+Step 2 — Trade Window (STRICT): ONLY enter 9:35 AM–${PARAMS.entryWindowEnd} ET. After ${PARAMS.entryWindowEnd}: manage only. After 3:45 PM: close every SPY 0DTE position you hold (SPY 0DTE options ONLY — never touch other holdings).
 
 Step 3 — Setup Requirements:
 (A) REGIME — all must hold:
 - VIX between 16 and 35 (from FMP quote "^VIX", "price" field). This is a HARD filter — if VIX is outside 16–35, do not enter.
 - VIX term structure: VIX9D is unavailable on the current plan, so this check is skipped. Do not let its absence block a trade.
 - No opposing position open.
-(B) DIRECTIONAL SIGNAL — you need genuine continuation, not just a number. Require AT LEAST 2 of:
+(B) DIRECTIONAL SIGNAL — you need genuine continuation, not just a number. Require AT LEAST ${PARAMS.minSignals} of:
 - SPY >0.4% from open in the trade direction.
 - Price on the correct side of VWAP and holding it (above → calls, below → puts).
 - Opening-range breakout: trading beyond the 9:30–9:45 range in the trade direction.
@@ -145,7 +163,7 @@ Direction = calls if confluence is bullish, puts if bearish. If signals conflict
 - Do NOT open a new position in the 15 min before a scheduled econ release unless that release IS the catalyst you intend to trade.
 
 Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE chain WITH greeks and choose by delta:
-- Default target: the strike nearest |delta| 0.45–0.55 (≈ATM). This keeps risk consistent across calm and volatile days.
+- Default target: the strike nearest |delta| ${PARAMS.deltaLow}–${PARAMS.deltaHigh} (≈ATM). This keeps risk consistent across calm and volatile days.
 - Early entries (9:35–10:00 ET): you MAY go as low as |delta| 0.40 for cheaper, more convex exposure when conviction is high — gamma has time to work.
 - Later entries (after 10:30 ET): tighten to |delta| 0.55–0.60 (ATM/slightly ITM) to reduce theta bleed; less time for a far strike to pay off.
 - HARD FLOOR: never buy below |delta| 0.35. Too far OTM = theta/IV-crush trap.

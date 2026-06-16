@@ -15,6 +15,23 @@
 
 import { execFileSync } from "child_process";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { evaluate, loadParams } from "./shadow.mjs";
+
+// Extract first balanced JSON object after a tag (handles nesting).
+function extractJson(text, tag) {
+  const idx = text.indexOf(tag); if (idx === -1) return null;
+  const start = text.indexOf("{", idx); if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; }
+    else if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) { try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; } }
+  }
+  return null;
+}
+const SAFE_KEYS = ["entryWindowEnd", "minSignals", "deltaLow", "deltaHigh"];
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
 const REVIEW_DIR = "/root/spy-trader/reviews";
@@ -146,7 +163,11 @@ Write a concise markdown review with these sections:
 ## Signal edge (interpret the favorableRate numbers honestly)
 ## Suggested experiments (specific, testable, human-approved; mark each "low/medium/high confidence")
 ## Data quality notes (anything missing or unreliable in the journal)
-Keep it tight and practical.`;
+Keep it tight and practical.
+
+Then, on the VERY LAST line, output ONE machine-readable proposal for your single best, safe parameter change as:
+PROPOSAL_JSON: {"change":{<one or more of entryWindowEnd,minSignals,deltaLow,deltaHigh>},"rationale":"<one sentence>","confidence":"low|medium|high"}
+You may ONLY propose those four keys (entryWindowEnd is "HH:MM" ET ≤ "11:00"; minSignals 2-4; deltaLow/deltaHigh between 0.30 and 0.70). NEVER propose changes to sizing, stops, the $400 cap, the VIX band, or anything else — those are fixed. If you have no confident change, output PROPOSAL_JSON: {"change":{},"rationale":"insufficient evidence","confidence":"low"}.`;
 
 let review = "";
 try {
@@ -161,14 +182,67 @@ try {
   process.exit(1);
 }
 
+// ── Proposal → critic → shadow-test ───────────────────────────────────────────
+const current = loadParams();
+let verdictBlock = "## Shadow-test\n";
+let dashVerdict = "";
+
+const proposalRaw = extractJson(review, "PROPOSAL_JSON");
+const change = proposalRaw && proposalRaw.change && typeof proposalRaw.change === "object" ? proposalRaw.change : {};
+// Keep only safe keys — anything else is silently dropped (risk params are off-limits).
+const safeChange = Object.fromEntries(Object.entries(change).filter(([k]) => SAFE_KEYS.includes(k)));
+
+if (!Object.keys(safeChange).length) {
+  verdictBlock += "No safe parameter change proposed this cycle.\n";
+  dashVerdict = "No change proposed.";
+} else {
+  const proposed = { ...current, ...safeChange };
+
+  // Critic pass — an independent skeptic stress-tests the proposal.
+  let critique = "";
+  try {
+    const { ANTHROPIC_API_KEY: _d, ...env } = { ...process.env, HOME: "/root" };
+    critique = execFileSync("claude", ["--model", "claude-sonnet-4-6", "--max-turns", "4", "-p",
+      `You are a skeptical risk reviewer for a live-money 0DTE trading bot. A reviewer proposed this parameter change: ${JSON.stringify(safeChange)} (rationale: ${proposalRaw?.rationale || "n/a"}). Current params: ${JSON.stringify(current)}. Based on this stats summary:\n${statsBlock}\n\nIn 3-4 sentences: is this justified by the data or is it likely overfitting a small sample? What would falsify it? Be blunt; default to "not yet" when the sample is thin.`,
+    ], { env, timeout: 90000, encoding: "utf8" }).trim();
+  } catch { critique = "(critic pass unavailable)"; }
+
+  // Objective shadow-test over the journal.
+  const cur = evaluate(recs, current);
+  const pro = evaluate(recs, proposed);
+  const enough = cur.entries >= 25 && pro.entries >= 25;
+  const edge = (pro.avgRetPct ?? -999) - (cur.avgRetPct ?? -999);
+  const wins = enough && edge >= 5;
+  const verdict = !enough
+    ? `INSUFFICIENT DATA (need ≥25 evaluated entries each; have current=${cur.entries}, proposed=${pro.entries})`
+    : wins ? `PROPOSED WINS by ${edge.toFixed(1)}pp est. return — candidate for promotion`
+           : `HOLD — not a clear improvement (edge ${edge.toFixed(1)}pp, need ≥5pp)`;
+
+  verdictBlock += `Proposed change: \`${JSON.stringify(safeChange)}\` (confidence: ${proposalRaw?.confidence || "?"})\n\n`
+    + `Shadow-test over ${recs.length} journaled scans (est. option return clamped to −40%/+150%):\n`
+    + `- current  \`${JSON.stringify(current)}\` → entries=${cur.entries}, avgEstReturn=${cur.avgRetPct}%, estWin=${cur.winRatePct}%\n`
+    + `- proposed \`${JSON.stringify(proposed)}\` → entries=${pro.entries}, avgEstReturn=${pro.avgRetPct}%, estWin=${pro.winRatePct}%\n\n`
+    + `**Verdict: ${verdict}**\n\n### Critic\n${critique}\n`;
+  dashVerdict = `Proposed ${JSON.stringify(safeChange)} → ${verdict}`;
+
+  // Auto-promotion is OFF by default. Only writes params.json when explicitly
+  // enabled AND the shadow-test clears the gates. Risk params can never be here.
+  if (wins && process.env.AUTO_PROMOTE === "1") {
+    writeFileSync("/root/spy-trader/params.json", JSON.stringify(proposed, null, 2));
+    verdictBlock += `\n_PROMOTED: wrote params.json. Agent uses the new params next scan._\n`;
+    dashVerdict += " — PROMOTED (auto)";
+    await push({ type: "warn", content: `⚙️ Strategy auto-updated after shadow-test: ${JSON.stringify(safeChange)}` });
+  }
+}
+
 // Save the full review
 mkdirSync(REVIEW_DIR, { recursive: true });
 const file = `${REVIEW_DIR}/review-${etDateStr()}.md`;
-const full = `# SPY 0DTE Agent — Performance Review (${etDateStr()}, last ${DAYS}d)\n\n_${recs.length} scans journaled, ${stats.setup30.evaluated} ≥2-signal setups evaluated._\n\n${review}\n\n---\n\n## Raw stats\n\`\`\`json\n${statsBlock}\n\`\`\`\n`;
+const full = `# SPY 0DTE Agent — Performance Review (${etDateStr()}, last ${DAYS}d)\n\n_${recs.length} scans journaled, ${stats.setup30.evaluated} ≥2-signal setups evaluated._\n\n${review}\n\n---\n\n${verdictBlock}\n---\n\n## Raw stats\n\`\`\`json\n${statsBlock}\n\`\`\`\n`;
 writeFileSync(file, full);
 console.log(`Saved ${file}`);
 
 // Push a compact summary to the dashboard
-const headline = review.split("\n").find(l => l.trim() && !l.startsWith("#")) || "Review ready.";
-await push({ type: "agent", content: `📊 WEEKLY REVIEW (${etDateStr()}, ${recs.length} scans, last ${DAYS}d)\n${headline}\n\nFull review saved on the VPS: ${file}` });
+const headline = review.split("\n").find(l => l.trim() && !l.startsWith("#") && !l.startsWith("PROPOSAL_JSON")) || "Review ready.";
+await push({ type: "agent", content: `📊 WEEKLY REVIEW (${etDateStr()}, ${recs.length} scans, last ${DAYS}d)\n${headline}\n\n${dashVerdict}\n\nFull review saved on the VPS: ${file}` });
 console.log("Review pushed to dashboard.");
