@@ -81,6 +81,29 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
 
+// Extract the first balanced JSON object following a tag (handles nested objects
+// and quoted braces — a plain regex can't). Returns the parsed object or null.
+function extractJson(text, tag) {
+  const idx = text.indexOf(tag);
+  if (idx === -1) return null;
+  const start = text.indexOf("{", idx);
+  if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) {
+      try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
+    }
+  }
+  return null;
+}
+
 const STATE_FILE = "/tmp/spy-agent-state.json";
 function loadState() {
   try { return existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : {}; }
@@ -152,7 +175,7 @@ Step 9 — Report format:
 📈 BOOK: [Open positions, entry, current, % P&L]
 ⏱ NEXT: [What to watch]
 💾 ACCOUNT_JSON: {"buyingPower":0,"portfolioValue":0,"totalPnl":0}
-💾 SCAN_JSON: {"spy":0,"pctFromOpen":0,"vwapSide":"above","openingRange":"inside","vix":0,"trend":"bull","signals":[],"signalCount":0,"regimeOk":true,"decision":"WAIT","direction":null,"reason":"","entry":null}
+💾 SCAN_JSON: {"spy":0,"pctFromOpen":0,"vwapSide":"above","openingRange":"inside","vix":0,"trend":"bull","signals":[],"signalCount":0,"regimeOk":true,"decision":"WAIT","direction":null,"reason":"","candidate":null,"entry":null}
 
 Replace the zeros in ACCOUNT_JSON with real values from the portfolio tool. This line must always appear. (Win/loss and realized P&L are tracked separately from your order history, so you do not need to report closes here.)
 
@@ -163,8 +186,9 @@ SCAN_JSON is a machine-readable snapshot of THIS scan for the learning journal �
 - signals: array of the confluence signals that fired this scan, from ["move","vwap","or_breakout","trend"]. signalCount: how many (number).
 - regimeOk: true/false (VIX 16–35 and conditions acceptable). decision: "ENTER" | "WAIT" | "MANAGE" | "NONE" (NONE = outside hours/market closed).
 - direction: "call" | "put" | null. reason: one short sentence explaining the decision.
-- entry: if you ENTERED this scan, {"strike":<n>,"delta":<n>,"contracts":<n>,"premium":<n>}; otherwise null.
-Keep it on ONE line of valid JSON with no nested objects beyond "entry".
+- candidate: the SPY 0DTE option you WOULD trade in the leaned direction THIS scan (fill it even on WAIT, so we capture option-level data): {"strike":<n>,"delta":<n>,"premium":<mid per-share>,"spreadPct":<bid-ask spread as % of mid>}. Use null only if the market is closed or no sensible candidate exists.
+- entry: if you actually ENTERED this scan, {"strike":<n>,"delta":<n>,"contracts":<n>,"premium":<n>}; otherwise null.
+Keep it on ONE line of valid JSON (candidate and entry are the only nested objects).
 
 HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY 9:35–11 AM ET entries. Directional, no spreads. Risk-based sizing, 1–2 contracts, max $400 outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <16 or >35. Need real directional confluence (≥2 signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
 
@@ -216,18 +240,13 @@ async function runScan(instruction = null) {
     }
 
     // Extract account data from JSON footer in scan output
-    let account = null;
-    const acctMatch = text.match(/ACCOUNT_JSON[^{]*(\{[\s\S]*?\})/);
-    if (acctMatch) {
-      try { account = JSON.parse(acctMatch[1]); } catch {}
-    }
+    const account = extractJson(text, "ACCOUNT_JSON");
 
     // Append this scan's structured read to the learning journal (best-effort).
     // Every scan — trade or not — becomes a labeled observation we can review later.
     try {
-      const scanMatch = text.match(/SCAN_JSON[^{]*(\{[\s\S]*?\})/);
-      if (scanMatch) {
-        const rec = JSON.parse(scanMatch[1]);
+      const rec = extractJson(text, "SCAN_JSON");
+      if (rec) {
         rec.ts = Date.now();
         rec.etDate = getETDate();
         rec.etTime = getETTime();
