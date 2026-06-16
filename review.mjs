@@ -15,7 +15,7 @@
 
 import { execFileSync } from "child_process";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
-import { evaluate, loadParams } from "./shadow.mjs";
+import { evaluate, loadParams, promote } from "./shadow.mjs";
 
 // Extract first balanced JSON object after a tag (handles nesting).
 function extractJson(text, tag) {
@@ -228,10 +228,10 @@ if (!Object.keys(safeChange).length) {
   // Auto-promotion is OFF by default. Only writes params.json when explicitly
   // enabled AND the shadow-test clears the gates. Risk params can never be here.
   if (wins && process.env.AUTO_PROMOTE === "1") {
-    writeFileSync("/root/spy-trader/params.json", JSON.stringify(proposed, null, 2));
-    verdictBlock += `\n_PROMOTED: wrote params.json. Agent uses the new params next scan._\n`;
+    const applied = promote(proposed, { edge: Math.round(edge * 10) / 10, source: "weekly-review", rationale: proposalRaw?.rationale });
+    verdictBlock += `\n_PROMOTED (auto): params.json → ${JSON.stringify(applied)}. Agent uses the new params next scan. Revert anytime by deleting params.json on the VPS._\n`;
     dashVerdict += " — PROMOTED (auto)";
-    await push({ type: "warn", content: `⚙️ Strategy auto-updated after shadow-test: ${JSON.stringify(safeChange)}` });
+    await push({ type: "warn", content: `⚙️ Strategy auto-updated after shadow-test → ${JSON.stringify(applied)}. (Delete params.json on the VPS to revert.)` });
   }
 }
 

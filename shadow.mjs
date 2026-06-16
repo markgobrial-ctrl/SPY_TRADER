@@ -20,11 +20,33 @@
  *   AUTO_PROMOTE=1 node shadow.mjs '{...}'  # write params.json IF it clearly wins
  */
 
-import { readFileSync, existsSync, writeFileSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, appendFileSync } from "fs";
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
 const PARAMS_FILE = "/root/spy-trader/params.json";
+const HISTORY_FILE = "/root/spy-trader/params-history.jsonl";
 const DEFAULT_PARAMS = { entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55 };
+
+// Hard bounds — applied before ANY write, so even a malformed/extreme proposal
+// (or an LLM that ignores the stated ranges) cannot push params out of a safe box.
+export function clampParams(p) {
+  const out = { ...DEFAULT_PARAMS, ...p };
+  out.minSignals = Math.max(2, Math.min(4, Math.round(Number(out.minSignals) || 2)));
+  out.deltaLow = Math.max(0.30, Math.min(0.65, Number(out.deltaLow) || 0.45));
+  out.deltaHigh = Math.max(out.deltaLow + 0.05, Math.min(0.70, Number(out.deltaHigh) || 0.55));
+  const m = Math.max(600, Math.min(660, hhmm(out.entryWindowEnd))); // 10:00–11:00 only
+  out.entryWindowEnd = `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  return out;
+}
+
+// Apply a promotion: clamp, write params.json, append an audit record.
+export function promote(proposed, meta = {}) {
+  const from = loadParams();
+  const to = clampParams(proposed);
+  writeFileSync(PARAMS_FILE, JSON.stringify(to, null, 2));
+  try { appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), etDate: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), from, to, ...meta }) + "\n"); } catch {}
+  return to;
+}
 
 // Promotion gates — a proposal must clear ALL of these to auto-apply.
 const MIN_ENTRIES = 25;      // need at least this many evaluated hypothetical entries
@@ -114,8 +136,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     : wins ? `PROPOSED WINS by ${edge.toFixed(1)}pp avg return` : `HOLD — not a clear improvement (edge ${edge.toFixed(1)}pp, need ≥${MIN_EDGE_PP}pp)`}`);
 
   if (wins && process.env.AUTO_PROMOTE === "1") {
-    writeFileSync(PARAMS_FILE, JSON.stringify(proposed, null, 2));
-    console.log(`PROMOTED → wrote ${PARAMS_FILE}. Agent uses it on the next scan.`);
+    const applied = promote(proposed, { edge: Math.round(edge * 10) / 10, source: "shadow-cli" });
+    console.log(`PROMOTED → wrote ${PARAMS_FILE}: ${JSON.stringify(applied)}. Agent uses it on the next scan.`);
   } else if (wins) {
     console.log(`(Set AUTO_PROMOTE=1 to apply, or write params.json yourself.)`);
   }
