@@ -77,7 +77,9 @@ async function getPending() {
 }
 
 // ── Scan state (persisted between cron runs via a lock file) ──────────────────
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
+
+const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
 
 const STATE_FILE = "/tmp/spy-agent-state.json";
 function loadState() {
@@ -150,8 +152,19 @@ Step 9 — Report format:
 📈 BOOK: [Open positions, entry, current, % P&L]
 ⏱ NEXT: [What to watch]
 💾 ACCOUNT_JSON: {"buyingPower":0,"portfolioValue":0,"totalPnl":0}
+💾 SCAN_JSON: {"spy":0,"pctFromOpen":0,"vwapSide":"above","openingRange":"inside","vix":0,"trend":"bull","signals":[],"signalCount":0,"regimeOk":true,"decision":"WAIT","direction":null,"reason":"","entry":null}
 
 Replace the zeros in ACCOUNT_JSON with real values from the portfolio tool. This line must always appear. (Win/loss and realized P&L are tracked separately from your order history, so you do not need to report closes here.)
+
+SCAN_JSON is a machine-readable snapshot of THIS scan for the learning journal — it must ALWAYS appear, on every scan, trade or not. Fill every field from your analysis:
+- spy: current SPY price (number). pctFromOpen: % move from today's open (signed number, e.g. -0.32).
+- vwapSide: "above" | "below" | "at" (SPY vs intraday VWAP). openingRange: "breakout_up" | "breakout_down" | "inside" | "na".
+- vix: VIX level from ^VIX (number). trend: "bull" | "bear" | "chop".
+- signals: array of the confluence signals that fired this scan, from ["move","vwap","or_breakout","trend"]. signalCount: how many (number).
+- regimeOk: true/false (VIX 16–35 and conditions acceptable). decision: "ENTER" | "WAIT" | "MANAGE" | "NONE" (NONE = outside hours/market closed).
+- direction: "call" | "put" | null. reason: one short sentence explaining the decision.
+- entry: if you ENTERED this scan, {"strike":<n>,"delta":<n>,"contracts":<n>,"premium":<n>}; otherwise null.
+Keep it on ONE line of valid JSON with no nested objects beyond "entry".
 
 HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY 9:35–11 AM ET entries. Directional, no spreads. Risk-based sizing, 1–2 contracts, max $400 outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <16 or >35. Need real directional confluence (≥2 signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
 
@@ -207,6 +220,22 @@ async function runScan(instruction = null) {
     const acctMatch = text.match(/ACCOUNT_JSON[^{]*(\{[\s\S]*?\})/);
     if (acctMatch) {
       try { account = JSON.parse(acctMatch[1]); } catch {}
+    }
+
+    // Append this scan's structured read to the learning journal (best-effort).
+    // Every scan — trade or not — becomes a labeled observation we can review later.
+    try {
+      const scanMatch = text.match(/SCAN_JSON[^{]*(\{[\s\S]*?\})/);
+      if (scanMatch) {
+        const rec = JSON.parse(scanMatch[1]);
+        rec.ts = Date.now();
+        rec.etDate = getETDate();
+        rec.etTime = getETTime();
+        appendFileSync(JOURNAL_FILE, JSON.stringify(rec) + "\n");
+        console.log(`[${getETTime()}] Journaled scan: decision=${rec.decision} signals=${rec.signalCount}`);
+      }
+    } catch (e) {
+      console.error("Journal append failed:", e.message);
     }
 
     // Push the full scan output + latest account snapshot.
