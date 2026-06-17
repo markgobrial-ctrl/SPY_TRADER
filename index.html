@@ -629,7 +629,7 @@ function timeToMin(t){ const [h,m]=String(t).split(":").map(Number); return h*60
 function minToTime(m){ return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0"); }
 
 function stepLever(key, dir) {
-  if (applying) return;
+  if (applying || !strategy || !strategy.params) return;
   const L = LEVERS.find(x=>x.key===key);
   if (!leverEdits) leverEdits = { ...curParams() };
   if (L.type === "time") {
@@ -655,7 +655,12 @@ function startApplying() {
 }
 async function applyLevers() {
   if (!leverEdits || applying) return;
-  const change = { ...leverEdits };
+  // Send ONLY the levers that actually changed — so just those become "Manual",
+  // not every lever. (leverEdits is seeded from all current values.)
+  const cur = curParams();
+  const change = {};
+  for (const L of LEVERS) if (String(leverEdits[L.key]) !== String(cur[L.key])) change[L.key] = leverEdits[L.key];
+  if (!Object.keys(change).length) { leverEdits = null; renderStrategy(); return; }
   startApplying();
   await fetch("/api/params", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ change }) });
 }
@@ -674,6 +679,7 @@ async function resetAll() {
 const STATUS_CHIP = { promoted:["chip-green","Promoted"], candidate:["chip-green","Passed"], hold:["chip-red","Held"], insufficient:["chip-amber","Need data"], none:["chip-amber","No change"] };
 function renderStrategy() {
   if (!document.getElementById("levers")) return;
+  if (!strategy || !strategy.params) { document.getElementById("levers").innerHTML = '<div class="empty"><span class="ic">⏳</span>Loading levers…</div>'; return; }
   const cur = curParams(), edit = leverEdits || cur, dirty = !!leverEdits;
   // status badge + apply/cancel state
   const badge = document.getElementById("lever-dirty");
@@ -721,11 +727,16 @@ function renderStrategy() {
 
   const hist = (strategy && strategy.history || []).slice().reverse();
   document.getElementById("history-list").innerHTML = hist.length ? hist.slice(0,12).map(h => {
-    const ch = Object.entries(h.to||{}).map(([k,v])=>k+"="+v).join(", ");
-    const src = h.source==="manual" ? "Manual" : "Auto";
+    const layer = h.layer || (h.source==="manual"?"manual":h.source==="reset"?"reset":"learned");
+    const [scls,slabel] = layer==="manual"?["chip-blue","Manual"]:layer==="reset"?["chip-amber","Reset"]:["chip-green","Learned"];
+    let ch;
+    if (layer==="reset") ch = (!h.change||h.change==="all") ? "all levers → default" : (Array.isArray(h.change)?h.change.join(", "):String(h.change)) + " → default";
+    else if (h.change && typeof h.change==="object") ch = Object.entries(h.change).map(([k,v])=>k+"="+v).join(", ");
+    else ch = "—";
+    const edge = h.edge!=null ? ` · edge ${h.edge>=0?"+":""}${h.edge}pp` : "";
     return `<div class="hist">
-      <div class="hist-top"><span class="chip ${src==='Manual'?'chip-blue':'chip-green'}">${src}</span><span class="hist-date">${esc(h.etDate||"")}</span></div>
-      <div class="hist-body">${esc(ch)}${h.edge!=null?` · edge ${h.edge>=0?"+":""}${h.edge}pp`:""}</div>
+      <div class="hist-top"><span class="chip ${scls}">${slabel}</span><span class="hist-date">${esc(h.etDate||"")}</span></div>
+      <div class="hist-body">${esc(ch)}${edge}</div>
     </div>`;
   }).join("") : '<div class="empty"><span class="ic">📜</span>No changes yet</div>';
 }
