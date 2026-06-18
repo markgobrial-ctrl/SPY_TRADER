@@ -32,7 +32,7 @@ function writeJson(f, o) { writeFileSync(f, JSON.stringify(o, null, 2)); }
 function pick(obj, keys) { const o = {}; for (const k of keys) if (obj[k] !== undefined) o[k] = obj[k]; return o; }
 function logHistory(meta) { try { appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), etDate: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), ...meta }) + "\n"); } catch {} }
 export const DEFAULT_PARAMS = {
-  entryWindowStart: "09:35", entryWindowEnd: "11:00",
+  entryWindowStart: "09:35", entryWindowEnd: "13:00",
   minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
   maxContracts: 2, maxOutlay: 400,
   stopPct: 40, targetPct: 150, trailPct: 35,
@@ -44,7 +44,7 @@ export const DEFAULT_PARAMS = {
 // value cannot push a param out of a safe box.
 export const BOUNDS = {
   entryWindowStart: { type: "time", min: "09:35", max: "10:30" },
-  entryWindowEnd:   { type: "time", min: "10:00", max: "11:30" },
+  entryWindowEnd:   { type: "time", min: "10:00", max: "13:00" },
   minSignals:  { type: "int", min: 1, max: 4 },
   deltaLow:    { type: "num", min: 0.30, max: 0.65 },
   deltaHigh:   { type: "num", min: 0.35, max: 0.75 },

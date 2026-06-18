@@ -172,7 +172,7 @@ Keep it tight and practical.
 
 Then, on the VERY LAST line, output ONE machine-readable proposal for your single best, safe parameter change as:
 PROPOSAL_JSON: {"change":{<one or more of entryWindowEnd,minSignals,deltaLow,deltaHigh>},"rationale":"<one sentence>","confidence":"low|medium|high"}
-You may ONLY propose those four keys (entryWindowEnd is "HH:MM" ET ≤ "11:00"; minSignals 2-4; deltaLow/deltaHigh between 0.30 and 0.70). NEVER propose changes to sizing, stops, the $400 cap, the VIX band, or anything else — those are fixed. If you have no confident change, output PROPOSAL_JSON: {"change":{},"rationale":"insufficient evidence","confidence":"low"}.`;
+You may ONLY propose those four keys (entryWindowEnd is "HH:MM" ET ≤ "13:00"; minSignals 2-4; deltaLow/deltaHigh between 0.30 and 0.70). NEVER propose changes to sizing, stops, the $400 cap, the VIX band, or anything else — those are fixed. If you have no confident change, output PROPOSAL_JSON: {"change":{},"rationale":"insufficient evidence","confidence":"low"}.`;
 
 let review = "";
 try {

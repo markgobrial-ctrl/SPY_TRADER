@@ -30,18 +30,28 @@ const TUNABLE_PARAM_KEYS = [
   "vixMin", "vixMax", "minMovePct", "dailyLossLimit",
 ];
 const DEFAULT_STRATEGY_PARAMS = {
-  entryWindowStart: "09:35", entryWindowEnd: "11:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
+  entryWindowStart: "09:35", entryWindowEnd: "13:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
   maxContracts: 2, maxOutlay: 400, stopPct: 40, targetPct: 150, trailPct: 35,
   vixMin: 16, vixMax: 35, minMovePct: 0.4, dailyLossLimit: 0,
 };
 
 // ── Basic Auth ────────────────────────────────────────────────────────────────
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
+// PWA icons + manifest must be publicly fetchable: when Android/iOS adds the
+// site to the home screen it requests these WITHOUT the user's Basic Auth
+// credentials, so gating them makes the install fall back to a blank/letter icon.
+const PUBLIC_PWA_ASSETS = new Set([
+  "/manifest.webmanifest", "/favicon.png", "/favicon.ico", "/apple-touch-icon.png",
+  "/icon-192.png", "/icon-512.png", "/icon-maskable-192.png", "/icon-maskable-512.png",
+  "/alfredo-logo.png",
+]);
 if (DASHBOARD_PASSWORD) {
   app.use((req, res, next) => {
     // VPS endpoints use PUSH_SECRET — skip Basic Auth for them.
     // /health is public so Render's health check (and version probes) work.
+    // PWA icon/manifest assets are public so home-screen install can fetch them.
     if (req.path === "/api/push" || req.path === "/api/pending" || req.path === "/health") return next();
+    if (PUBLIC_PWA_ASSETS.has(req.path)) return next();
     const auth = req.headers.authorization;
     if (auth && auth.startsWith("Basic ")) {
       const [, user, pass] = Buffer.from(auth.slice(6), "base64").toString().match(/^([^:]*):(.*)$/) || [];
