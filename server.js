@@ -30,7 +30,7 @@ const TUNABLE_PARAM_KEYS = [
   "vixMin", "vixMax", "minMovePct", "dailyLossLimit",
 ];
 const DEFAULT_STRATEGY_PARAMS = {
-  entryWindowStart: "09:35", entryWindowEnd: "13:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
+  entryWindowStart: "09:35", entryWindowEnd: "14:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
   maxContracts: 2, maxOutlay: 400, stopPct: 40, targetPct: 150, trailPct: 35,
   vixMin: 16, vixMax: 35, minMovePct: 0.4, dailyLossLimit: 0,
 };

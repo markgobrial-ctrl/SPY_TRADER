@@ -151,12 +151,14 @@ Step 3 — Setup Requirements:
 - VIX between ${PARAMS.vixMin} and ${PARAMS.vixMax} (from FMP quote "^VIX", "price" field). This is a HARD filter — if VIX is outside ${PARAMS.vixMin}–${PARAMS.vixMax}, do not enter.
 - VIX term structure: VIX9D is unavailable on the current plan, so this check is skipped. Do not let its absence block a trade.
 - No opposing position open.
-(B) DIRECTIONAL SIGNAL — you need genuine continuation, not just a number. Require AT LEAST ${PARAMS.minSignals} of:
-- SPY >${PARAMS.minMovePct}% from open in the trade direction.
-- Price on the correct side of VWAP and holding it (above → calls, below → puts).
-- Opening-range breakout: trading beyond the 9:30–9:45 range in the trade direction.
-- Trend persistence on the 5-min: higher-highs/higher-lows (calls) or lower-lows/lower-highs (puts).
-Direction = calls if confluence is bullish, puts if bearish. If signals conflict, WAIT — do not force a trade. (Market internals like TICK/advance-decline are not available on the current data plan — do not attempt to fetch them.)
+(B) DIRECTIONAL SIGNAL — genuine continuation, not just a number. Four signals, each votes a direction:
+- move: |SPY % from open| >= ${PARAMS.minMovePct}% — votes the side of the move (up = call, down = put). A move smaller than ${PARAMS.minMovePct}% does NOT fire.
+- vwap: SPY clearly on one side of intraday VWAP and holding it (above = call, below = put). "at"/touching does NOT fire.
+- or_breakout: trading beyond the 9:30–9:45 opening range (breakout up = call, breakout down = put). Inside the range does NOT fire.
+- trend: 5-min structure — higher-highs/higher-lows (call) or lower-lows/lower-highs (put). Chop does NOT fire.
+Direction = the side with the MAJORITY of FIRING signals. Confluence counts ONLY the firing signals that AGREE with that direction; opposing signals never count, and if the two sides tie it is a CONFLICT → WAIT. Enter only if the agreeing-signal count is >= ${PARAMS.minSignals}.
+CONSISTENCY (hard, applies to SCAN_JSON): "signals" must list exactly the firing signals that agree with "direction"; "signalCount" MUST equal that array's length; for a put the candidate delta is NEGATIVE, for a call POSITIVE. Never report a count that disagrees with the array.
+DATA-MISSING DEGRADATION: vwap and or_breakout need intraday bars. Before declaring either unavailable, TRY to derive them yourself: pull today's 5-min (or 1-min) SPY bars (robinhood get_equity_historicals, or the FMP chart / technicalIndicators endpoints), compute session VWAP and the 9:30–9:45 high/low, and set vwapSide / openingRange from them. Only if intraday bars truly cannot be fetched, mark the unobservable signal(s) "na" and decide on the OBSERVABLE signals — but you still need >= ${PARAMS.minSignals} AGREEING observable signals; if fewer than ${PARAMS.minSignals} signals are even observable, WAIT. Never manufacture confluence from missing data. (Market internals like TICK/advance-decline are not on the data plan — do not attempt to fetch them.)
 (C) TIMING:
 - No entries before 9:35 (ignore the 9:30–9:35 noise).
 - Avoid lunch chop (~12:00–13:30 ET) unless a clean trend is clearly intact.
@@ -168,7 +170,7 @@ Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE
 - Later entries (after 10:30 ET): tighten to |delta| 0.55–0.60 (ATM/slightly ITM) to reduce theta bleed; less time for a far strike to pay off.
 - HARD FLOOR: never buy below |delta| 0.35. Too far OTM = theta/IV-crush trap.
 - Breakeven gate: breakeven = strike + ask (calls) or strike − ask (puts). Estimate expected remaining move from the ATM straddle mid (the market's expected move for the rest of the session). REQUIRE the breakeven to sit within ~70% of that expected remaining move in your direction. If the day can't realistically deliver the move to breakeven, SKIP — do not reach for a cheaper far-OTM strike and hope.
-- Liquidity gate: skip if bid/ask spread > 5% of the option's mid price (replaces the old flat $0.15 rule), or if volume/open interest is thin. Use mid for sizing, ask for the breakeven calc (assume you pay up).
+- Liquidity gate: skip if bid/ask spread > 3% of the option's mid price (0DTE spreads are a tax; the prior 5% was too loose — clean ATM SPY 0DTE strikes are typically well under 3%), or if volume/open interest is thin. Spreads widen at midday, late in the session, and on far strikes — prefer the tightest qualifying strike and treat a 2–3% spread as a real cost in the breakeven/target math. Use mid for sizing, ask for the breakeven calc (assume you pay up).
 - When two strikes both qualify, prefer the one with the better reward-to-risk at your ${PARAMS.targetPct}% target given your ${PARAMS.stopPct}% stop.
 
 Step 5 — Size (RISK-BASED, not fixed count): Your hard stop is ${PARAMS.stopPct}% of premium. Risk budget per trade = the smaller of $160 or 8% of account equity. Contracts = floor(riskBudget ÷ (entryPremium × 100 × ${(PARAMS.stopPct / 100).toFixed(2)})). Then clamp to ${PARAMS.maxContracts} contract(s) max, and NEVER exceed $${PARAMS.maxOutlay} total outlay. If account < $1,500: 1 contract max. If even 1 contract would risk more than the budget or cost > $${PARAMS.maxOutlay}, pick a cheaper qualifying strike or SKIP — never over-risk.
@@ -201,14 +203,38 @@ SCAN_JSON is a machine-readable snapshot of THIS scan for the learning journal �
 - spy: current SPY price (number). pctFromOpen: % move from today's open (signed number, e.g. -0.32).
 - vwapSide: "above" | "below" | "at" (SPY vs intraday VWAP). openingRange: "breakout_up" | "breakout_down" | "inside" | "na".
 - vix: VIX level from ^VIX (number). trend: "bull" | "bear" | "chop".
-- signals: array of the confluence signals that fired this scan, from ["move","vwap","or_breakout","trend"]. signalCount: how many (number).
+- signals: the FIRING signals that AGREE with "direction", from ["move","vwap","or_breakout","trend"]. signalCount MUST equal signals.length (never disagree with the array).
 - regimeOk: true/false (VIX 16–35 and conditions acceptable). decision: "ENTER" | "WAIT" | "MANAGE" | "NONE" (NONE = outside hours/market closed).
-- direction: "call" | "put" | null. reason: one short sentence explaining the decision.
+- direction: "call" | "put" | null (null when signals tie/conflict). For a put the candidate delta is NEGATIVE; for a call, POSITIVE. reason: one short sentence explaining the decision.
 - candidate: the SPY 0DTE option you WOULD trade in the leaned direction THIS scan (fill it even on WAIT, so we capture option-level data): {"strike":<n>,"delta":<n>,"premium":<mid per-share>,"spreadPct":<bid-ask spread as % of mid>}. Use null only if the market is closed or no sensible candidate exists.
 - entry: if you actually ENTERED this scan, {"strike":<n>,"delta":<n>,"contracts":<n>,"premium":<n>}; otherwise null.
 Keep it on ONE line of valid JSON (candidate and entry are the only nested objects).
 
 HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY ${PARAMS.entryWindowStart}–${PARAMS.entryWindowEnd} ET entries. Directional, no spreads. Risk-based sizing, ${PARAMS.maxContracts} contract(s) max, max $${PARAMS.maxOutlay} outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <${PARAMS.vixMin} or >${PARAMS.vixMax}. Need real directional confluence (≥${PARAMS.minSignals} signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
+
+// ── Journal hygiene ───────────────────────────────────────────────────────────
+// Make a scan record self-consistent before it enters the learning journal. The
+// model occasionally (a) reports a signalCount that disagrees with its own signals
+// array, or (b) emits a candidate whose delta sign contradicts the trade direction.
+// We TRUST the model's signal list and direction (its nuanced reads, incl. whether
+// VWAP is "holding") and only enforce internal consistency: signalCount === list
+// length, and candidate delta sign === direction (puts negative, calls positive).
+// The live ENTER/WAIT decision the agent already made is never altered here; this
+// only keeps the recorded data clean so the learning loop isn't fed contradictions.
+function reconcileScan(rec) {
+  const before = { signalCount: rec.signalCount, delta: rec.candidate ? rec.candidate.delta : undefined };
+  if (Array.isArray(rec.signals)) rec.signalCount = rec.signals.length;
+  if (rec.candidate && typeof rec.candidate.delta === "number" && (rec.direction === "put" || rec.direction === "call")) {
+    const want = rec.direction === "put" ? -1 : 1;
+    if (rec.candidate.delta !== 0 && Math.sign(rec.candidate.delta) !== want) {
+      rec.candidate.delta = Math.abs(rec.candidate.delta) * want;
+    }
+  }
+  const changed = before.signalCount !== rec.signalCount ||
+    (rec.candidate && before.delta !== rec.candidate.delta);
+  if (changed) rec.reportedByModel = before; // telemetry: keep the model's original read
+  return rec;
+}
 
 // ── Run a Claude Code scan ────────────────────────────────────────────────────
 
@@ -269,11 +295,12 @@ async function runScan(instruction = null) {
     try {
       const rec = extractJson(text, "SCAN_JSON");
       if (rec) {
+        reconcileScan(rec); // enforce signalCount===signals.length and delta sign===direction
         rec.ts = Date.now();
         rec.etDate = getETDate();
         rec.etTime = getETTime();
         appendFileSync(JOURNAL_FILE, JSON.stringify(rec) + "\n");
-        console.log(`[${getETTime()}] Journaled scan: decision=${rec.decision} signals=${rec.signalCount}`);
+        console.log(`[${getETTime()}] Journaled scan: decision=${rec.decision} signals=${rec.signalCount}${rec.reportedByModel ? " (reconciled)" : ""}`);
       }
     } catch (e) {
       console.error("Journal append failed:", e.message);

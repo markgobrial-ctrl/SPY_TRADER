@@ -6,8 +6,9 @@
  * current one on real observed conditions — not on the agents' opinions.
  *
  * Honesty about the model: we don't have historical 0DTE option prices, so each
- * hypothetical entry's return is ESTIMATED from the candidate option's delta and
- * premium applied to the realized 30-min SPY move, then clamped to the strategy's
+ * hypothetical entry's return is ESTIMATED from |delta| x the underlying's move
+ * over premium, walked forward along the day's price path under the strategy's
+ * real exit model (hard stop, trailing stop once armed, EOD close), clamped to the
  * stop/target (−40% / +150%). This is a relative comparison metric, not a precise
  * backtest. Treat results as directional evidence, and require a real sample.
  *
@@ -32,7 +33,7 @@ function writeJson(f, o) { writeFileSync(f, JSON.stringify(o, null, 2)); }
 function pick(obj, keys) { const o = {}; for (const k of keys) if (obj[k] !== undefined) o[k] = obj[k]; return o; }
 function logHistory(meta) { try { appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), etDate: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), ...meta }) + "\n"); } catch {} }
 export const DEFAULT_PARAMS = {
-  entryWindowStart: "09:35", entryWindowEnd: "13:00",
+  entryWindowStart: "09:35", entryWindowEnd: "14:00",
   minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
   maxContracts: 2, maxOutlay: 400,
   stopPct: 40, targetPct: 150, trailPct: 35,
@@ -44,7 +45,7 @@ export const DEFAULT_PARAMS = {
 // value cannot push a param out of a safe box.
 export const BOUNDS = {
   entryWindowStart: { type: "time", min: "09:35", max: "10:30" },
-  entryWindowEnd:   { type: "time", min: "10:00", max: "13:00" },
+  entryWindowEnd:   { type: "time", min: "10:00", max: "15:00" },
   minSignals:  { type: "int", min: 1, max: 4 },
   deltaLow:    { type: "num", min: 0.30, max: 0.65 },
   deltaHigh:   { type: "num", min: 0.35, max: 0.75 },
@@ -149,22 +150,45 @@ function etMinutes(ts) {
 }
 function hhmm(s) { const [h, m] = String(s).split(":").map(Number); return h * 60 + (m || 0); }
 
-function forwardReturn(recs, i, minutes) {
-  const target = recs[i].ts + minutes * 60000;
+// Walk the same-day price path forward from entry i and apply the strategy's real
+// exit model: hard stop, trailing stop once armed (tightened late in the session),
+// and an end-of-day close. Returns the estimated option return (fraction) or null.
+function simulateExit(recs, i, lean, delta, premium, p) {
+  const entrySpy = recs[i].spy;
+  let peak = 0, last = null;
   for (let j = i + 1; j < recs.length; j++) {
-    if (recs[j].etDate !== recs[i].etDate) break;
-    if (recs[j].ts >= target && recs[i].spy > 0 && recs[j].spy > 0)
-      return (recs[j].spy - recs[i].spy) / recs[i].spy;
+    if (recs[j].etDate !== recs[i].etDate) break;   // never cross sessions
+    if (!(recs[j].spy > 0)) continue;
+    const moveDir = lean === "call" ? recs[j].spy - entrySpy : entrySpy - recs[j].spy;
+    const optRet = (delta * moveDir) / premium;     // est. option % return at this step
+    last = optRet;
+    if (optRet <= p.stop) return p.stop;            // hard stop
+    if (optRet >= p.target) return p.target;        // target cap
+    if (optRet > peak) peak = optRet;               // new high-water mark
+    if (peak >= p.arm) {                            // trailing stop armed (>= +80%)
+      const tm = etMinutes(recs[j].ts);
+      let effTrail = p.trail;                        // tighten the trail late in the day
+      if (tm >= hhmm("14:30")) effTrail = Math.min(effTrail, 0.20);
+      else if (tm >= hhmm("13:00")) effTrail = Math.min(effTrail, 0.25);
+      let trailStop = peak - effTrail;
+      if (peak >= 1.0) trailStop = Math.max(trailStop, 0); // +100% never round-trips to a loss
+      if (optRet <= trailStop) return Math.max(p.stop, trailStop);
+    }
   }
-  return null;
+  return last == null ? null : Math.max(p.stop, Math.min(p.target, last)); // EOD close
 }
 
-// Replay the journal under `params`; return estimated entry performance.
+// Replay the journal under `params`; return estimated entry performance using the
+// hold-aware exit model above (not a fixed 30-min snapshot).
 export function evaluate(recs, params) {
   const startMin = hhmm(params.entryWindowStart || "09:35");
   const endMin = hhmm(params.entryWindowEnd);
-  const stop = -(Number(params.stopPct ?? 40) / 100);
-  const target = Number(params.targetPct ?? 150) / 100;
+  const exit = {
+    stop: -(Number(params.stopPct ?? 40) / 100),
+    target: Number(params.targetPct ?? 150) / 100,
+    trail: Number(params.trailPct ?? 35) / 100,
+    arm: 0.8, // trail arms once up >= 80% (matches the SYSTEM_PROMPT)
+  };
   let entries = 0, sumRet = 0, wins = 0;
   for (let i = 0; i < recs.length; i++) {
     const r = recs[i];
@@ -174,14 +198,11 @@ export function evaluate(recs, params) {
     const c = r.candidate;
     if (!c || !(c.premium > 0)) continue;                   // need a real candidate
     const d = Math.abs(c.delta ?? 0.5);
-    if (d < params.deltaLow - 0.05 || d > params.deltaHigh + 0.05) continue; // delta band (±0.05 slack)
-    const fr = forwardReturn(recs, i, 30);
-    if (fr == null) continue;
+    if (d < params.deltaLow - 0.05 || d > params.deltaHigh + 0.05) continue; // delta band (0.05 slack)
     const lean = r.direction || (Number(r.pctFromOpen) >= 0 ? "call" : "put");
-    const dirMoveDollars = (lean === "call" ? fr : -fr) * r.spy;  // $ move in leaned dir
-    let optRet = (d * dirMoveDollars) / c.premium;               // est. option % return
-    optRet = Math.max(stop, Math.min(target, optRet));          // clamp to stop/target
-    entries++; sumRet += optRet; if (optRet > 0) wins++;
+    const ret = simulateExit(recs, i, lean, d, c.premium, exit);
+    if (ret == null) continue;
+    entries++; sumRet += ret; if (ret > 0) wins++;
   }
   return {
     entries,
