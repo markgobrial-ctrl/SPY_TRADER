@@ -167,9 +167,14 @@ function maybeTripLossLimit() {
   const limit = Number(db.data.strategy?.params?.dailyLossLimit) || DAILY_LOSS_LIMIT;
   if (!limit) return;
   if (!db.data.agentEnabled) return;
-  if (db.data.stats.realizedToday > -limit) return;
+  // realizedToday only resets inside recordClose on the first close of a new ET
+  // day. If we're on a new day and haven't recorded a close yet, yesterday's
+  // figure is stale — treat today's realized as 0 so we neither falsely trip the
+  // breaker nor carry a prior-day loss into the new session.
+  const realizedToday = db.data.stats.realizedDate === getETDate() ? db.data.stats.realizedToday : 0;
+  if (realizedToday > -limit) return;
   db.data.agentEnabled = false;
-  log("warn", `🛑 Daily loss limit hit (${db.data.stats.realizedToday.toFixed(2)} ≤ -${limit}). Agent auto-disabled for the day.`);
+  log("warn", `🛑 Daily loss limit hit (${realizedToday.toFixed(2)} ≤ -${limit}). Agent auto-disabled for the day.`);
   broadcast("enabled", false);
   broadcast("emergency", true);
 }
@@ -325,6 +330,13 @@ app.post("/api/params", async (req, res) => {
   for (const k of TUNABLE_PARAM_KEYS) if (incoming[k] !== undefined && incoming[k] !== null) change[k] = incoming[k];
   if (!Object.keys(change).length) return res.status(400).json({ error: "No valid params (allowed: " + TUNABLE_PARAM_KEYS.join(", ") + ")" });
   db.data.pendingAction = { type: "set_params", change, at: Date.now() };
+  // Optimistically reflect the requested change so the dashboard shows it right
+  // away instead of appearing to do nothing while the VPS is between cron ticks
+  // (or down). The VPS remains authoritative: it clamps the value and pushes the
+  // real strategy back, overwriting this. Mark each touched lever as "pending".
+  db.data.strategy.params = { ...db.data.strategy.params, ...change };
+  for (const k of Object.keys(change)) db.data.strategy.sources[k] = "pending";
+  broadcast("strategy", db.data.strategy);
   await queueWrite();
   log("info", `🛠 Manual param change requested: ${JSON.stringify(change)} — VPS will apply & clamp`);
   res.json({ ok: true, change });
