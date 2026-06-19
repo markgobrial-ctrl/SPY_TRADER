@@ -51,39 +51,79 @@ if (data.challenge) {
   });
 }
 
-// Handle newer in-app approval workflow
+// Handle newer in-app approval workflow (Robinhood "sheriff"/SUV verification).
+// NOTE: the previous version polled /workflows/{id}/ which never reports the
+// in-app approval, so it always timed out. The correct flow registers the
+// workflow on a device "machine", then polls the prompt-status endpoint.
 if (data.verification_workflow) {
   const workflowId = data.verification_workflow.id;
-  console.log("\n📱 Check your Robinhood app — approve the login request there.");
-  console.log("Waiting for approval", { workflowId });
 
-  // Poll until approved (up to 2 minutes)
-  let approved = false;
-  for (let i = 0; i < 24; i++) {
-    await new Promise(r => setTimeout(r, 5000)); // wait 5s
-    process.stdout.write(".");
-    const status = await fetch(`${RH}/workflows/${workflowId}/`, {
-      headers: { "Content-Type": "application/json" },
-    }).then(r => r.json()).catch(() => ({}));
-
-    if (status?.workflow_status === "workflow_status_approved" ||
-        status?.workflow_status === "workflow_status_completed") {
-      approved = true;
-      break;
-    }
-  }
-
-  if (!approved) {
-    console.error("\n❌ Timed out waiting for app approval. Try again.");
+  // 1. Register the workflow on a device-approval machine.
+  const machine = await rhPost("/pathfinder/user_machine/", {
+    device_id: DEVICE_TOKEN,
+    flow: "suv",
+    input: { workflow_id: workflowId },
+  });
+  if (!machine?.id) {
+    console.error("\n❌ Could not start verification:", JSON.stringify(machine, null, 2));
     rl.close();
     process.exit(1);
   }
 
-  console.log("\n✅ Approved! Getting token...");
-  data = await rhPost("/oauth2/token/", {
-    ...baseBody,
-    verification_workflow_id: workflowId,
+  const inquiriesUrl = `${RH}/pathfinder/inquiries/${machine.id}/user_view/`;
+
+  // 2. Ask Robinhood what kind of challenge it wants.
+  const view = await fetch(inquiriesUrl, {
+    headers: { "Content-Type": "application/json" },
+  }).then(r => r.json()).catch(() => ({}));
+  const challenge =
+    view?.type_context?.context?.sheriff_challenge ||
+    view?.context?.sheriff_challenge;
+  if (!challenge?.id) {
+    console.error("\n❌ Unexpected verification response:", JSON.stringify(view, null, 2));
+    rl.close();
+    process.exit(1);
+  }
+
+  if (challenge.type === "prompt") {
+    // In-app approval. Poll the prompt-status endpoint until you tap Approve.
+    console.log("\n📱 Open your Robinhood app (signed in with your NEW password) and approve the login request…");
+    const promptUrl = `${RH}/push/${challenge.id}/get_prompts_status/`;
+    let validated = false, last = null;
+    for (let i = 0; i < 36; i++) { // up to ~3 minutes
+      await new Promise(r => setTimeout(r, 5000));
+      process.stdout.write(".");
+      const s = await fetch(promptUrl, {
+        headers: { "Content-Type": "application/json" },
+      }).then(r => r.json()).catch(e => ({ _err: String(e) }));
+      last = s;
+      if (i === 0) console.log("\n   (status:", JSON.stringify(s) + ")");
+      if (s?.challenge_status === "validated") { validated = true; break; }
+    }
+    if (!validated) {
+      console.error("\n❌ Timed out. Last status from Robinhood:", JSON.stringify(last, null, 2));
+      console.error("If status stayed 'issued'/'pending', the prompt never reached an approved device — make sure the Robinhood app is signed in with your new password and notifications are on.");
+      rl.close();
+      process.exit(1);
+    }
+  } else if (challenge.type === "sms" || challenge.type === "email") {
+    // Code-based challenge.
+    console.log(`\nRobinhood sent a ${challenge.type.toUpperCase()} code.`);
+    const code = await ask("Enter the code: ");
+    await fetch(`${RH}/challenge/${challenge.id}/respond/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ response: code }),
+    });
+  }
+
+  // 3. Tell the inquiry to continue, then re-request the token.
+  await rhPost(`/pathfinder/inquiries/${machine.id}/user_view/`, {
+    sequence: 0,
+    user_input: { status: "continue" },
   });
+  console.log("\n✅ Approved! Getting token…");
+  data = await rhPost("/oauth2/token/", baseBody);
 }
 
 // Handle explicit MFA (TOTP / SMS code)
