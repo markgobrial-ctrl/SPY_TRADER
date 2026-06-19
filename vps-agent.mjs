@@ -213,11 +213,15 @@ HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any oth
 // ── Run a Claude Code scan ────────────────────────────────────────────────────
 
 async function runScan(instruction = null) {
+  // Derive every concrete number from PARAMS so the task line can never
+  // contradict the SYSTEM_PROMPT. Previously this hardcoded "9:35–11:00 AM ET
+  // only", which fought the system prompt's entryWindowEnd (e.g. 13:00) and made
+  // the agent anchor on 11:00 — silently suppressing every afternoon entry.
   const prompt = instruction || [
     `Autonomous scan. Today is ${getETDate()}, ET time is ${getETTime()}.`,
-    `Run full decision framework: check SPY vs open (need >0.4% move), VIX (need 16–35), open positions.`,
-    `Trade window 9:35–11:00 AM ET only. 1–2 contracts max, $400 max outlay.`,
-    `Let winners run to 150%+. Cut losers at 40%. Close all by 3:45 PM ET.`,
+    `Run full decision framework: check SPY vs open (need >${PARAMS.minMovePct}% move), VIX (need ${PARAMS.vixMin}–${PARAMS.vixMax}), open positions.`,
+    `Entry window ${PARAMS.entryWindowStart}–${PARAMS.entryWindowEnd} ET ONLY (manage-only after). ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay.`,
+    `Let winners run to ${PARAMS.targetPct}%+. Cut losers at ${PARAMS.stopPct}%. Close all SPY 0DTE by 3:45 PM ET.`,
     `Execute autonomously.`,
   ].join(" ");
 
