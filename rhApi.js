@@ -169,27 +169,34 @@ export async function rhGetAll(url) {
  * positions: [{ type, strike, expiry, qty, avg_cost, current_price, pnl_pct }]
  */
 export async function getAccountData() {
-  // 1a. Buying power from the ACCOUNT object — the true tradable buying power
-  // (incl. margin). The portfolio's withdrawable_amount is only withdrawable CASH
-  // and badly understates BP on a margin account (read $201 when real BP was
-  // ~$1,519). This REST login sees a single account = the agentic account.
+  // SCOPE EVERYTHING to the agentic account. This REST login also exposes the
+  // user's PERSONAL account (with unrelated SPY + CRM holdings), and the unscoped
+  // list endpoints return that account first — the wrong-account bug. The agentic
+  // account is reachable directly by number even though it isn't in /accounts/'s
+  // default list (/accounts/{n}/ works; the ?account_numbers= filter on /accounts/
+  // returns empty, so we use the direct path there).
+  const ACCT = process.env.ROBINHOOD_ACCOUNT || "545721409";
+
+  // 1a. Buying power from the agentic ACCOUNT object (cash account → available cash).
   let buying_power = 0;
   try {
-    const accts = await rhGet("/accounts/");
-    const acct = (accts.results || [])[0] || {};
-    buying_power = parseFloat(acct.buying_power ?? acct.cash ?? 0) || 0;
+    const acct = await rhGet(`/accounts/${ACCT}/`);
+    buying_power = parseFloat(
+      acct.buying_power ?? acct.cash_available_for_withdrawal ?? acct.portfolio_cash ?? acct.cash ?? 0
+    ) || 0;
   } catch {}
 
-  // 1b. Portfolio (total equity / portfolio value)
-  const portfolioData = await rhGet("/portfolios/");
-  const p = portfolioData.results?.[0] || {};
-  if (!buying_power) buying_power = parseFloat(p.withdrawable_amount || 0) || 0;
-  const portfolio_value = parseFloat(
-    p.extended_hours_equity || p.equity || p.market_value || 0
-  );
+  // 1b. Portfolio equity for the agentic account.
+  let portfolio_value = 0;
+  try {
+    const portfolioData = await rhGet(`/portfolios/?account_numbers=${ACCT}`);
+    const p = (portfolioData.results || [])[0] || {};
+    portfolio_value = parseFloat(p.extended_hours_equity || p.equity || p.market_value || 0) || 0;
+    if (!buying_power) buying_power = parseFloat(p.withdrawable_amount || 0) || 0;
+  } catch {}
 
-  // 2. Open option positions (quantity > 0)
-  const rawPositions = await rhGetAll("/options/positions/?nonzero=true");
+  // 2. Open option positions for the AGENTIC account only.
+  const rawPositions = await rhGetAll(`/options/positions/?nonzero=true&account_numbers=${ACCT}`);
 
   // 3. Enrich each position with instrument details + current market price
   const positions = (
