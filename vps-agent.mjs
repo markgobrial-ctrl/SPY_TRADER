@@ -127,12 +127,21 @@ function saveState(s) {
 // cron fires this script every minute, but one invocation can run for several
 // minutes (the account-refresh + scan `claude` subprocesses). Without a mutex a
 // later tick starts an overlapping run — the duplicate scan seen on the dashboard,
-// and the subprocess contention that then trips the 4-min scan timeout. This
-// O_EXCL lock guarantees one run at a time; a lock older than LOCK_STALE_MS is
-// assumed to be from a crashed run (the exit handler can't fire on SIGKILL/OOM)
+// and the subprocess contention that then trips the scan's wall-clock timeout.
+// This O_EXCL lock guarantees one run at a time; a lock older than LOCK_STALE_MS
+// is assumed to be from a crashed run (the exit handler can't fire on SIGKILL/OOM)
 // and reclaimed.
 const LOCK_FILE = "/tmp/spy-agent.lock";
-const LOCK_STALE_MS = 15 * 60 * 1000; // comfortably above the worst-case single run (~10 min)
+// Hard wall-clock cap for ONE `claude` scan (env-overridable). Raised 4→8 min:
+// the live log showed every scan dying at exactly 4:00, because a single scan now
+// does ~20+ sequential MCP round-trips (derive VWAP from 5-min bars, opening
+// range, 0DTE chain w/ greeks, positions/orders, PLUS managing an open position)
+// and no longer fits in 4 min. 8 min lets it finish; the lock makes the longer
+// run safe (overlapping ticks just bail).
+const SCAN_TIMEOUT_MS = Number(process.env.SCAN_TIMEOUT_MS) || 8 * 60 * 1000;
+// Stale threshold must clear the worst-case single run: one scan (SCAN_TIMEOUT_MS)
+// plus the pre-scan and finally account refreshes (~2.5 min each). ~9 min headroom.
+const LOCK_STALE_MS = SCAN_TIMEOUT_MS + 9 * 60 * 1000;
 let holdsLock = false;
 
 function lockIsStale() {
@@ -311,6 +320,7 @@ async function runScan(instruction = null) {
   await push({ type: "info", content: `▶ Scan started — ${getETTime()}`, scanningNow: true });
   await push({ type: "scan_start" });
 
+  const startedAt = Date.now();
   try {
     // Run without ANTHROPIC_API_KEY so claude uses stored claudeAiOauth credentials,
     // which carry the Robinhood MCP OAuth context.
@@ -325,7 +335,8 @@ async function runScan(instruction = null) {
       "-p", fullPrompt,
     ], {
       env: envForClaude,
-      timeout: 4 * 60 * 1000, // 4 min max
+      timeout: SCAN_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024, // 10MB — default 1MB can overflow a verbose scan and get mis-killed (looks like a timeout)
       encoding: "utf8",
     });
 
@@ -370,15 +381,33 @@ async function runScan(instruction = null) {
       ...(account ? { account } : {}),
     });
 
-    console.log(`[${getETTime()}] Scan done.`);
+    console.log(`[${getETTime()}] Scan done in ${Math.round((Date.now() - startedAt) / 1000)}s.`);
   } catch (err) {
-    // execFileSync hides the real reason in err.stdout/err.stderr — surface it.
-    const detail = [err.stderr, err.stdout].map(x => (x || "").toString().trim()).filter(Boolean).join(" | ").slice(0, 600);
-    const reason = /max turns/i.test(detail) ? "hit max turns (scan too long)"
-                 : err.killed || /ETIMEDOUT|timed out/i.test(err.message) ? "timed out"
-                 : detail || err.message;
-    await push({ type: "error", content: `VPS scan error: ${reason}` });
-    console.error("Scan error:", reason);
+    const elapsedS = Math.round((Date.now() - startedAt) / 1000);
+    const capS = Math.round(SCAN_TIMEOUT_MS / 1000);
+    // execFileSync hides the real reason in err.stdout/err.stderr — surface it, and
+    // keep a tail of whatever the scan emitted before dying so an intermittent stall
+    // is debuggable next time (did auth succeed? how many tool calls landed?).
+    const detail = [err.stderr, err.stdout].map(x => (x || "").toString().trim()).filter(Boolean).join(" | ");
+    const tail = detail ? ` — last output: …${detail.slice(-300)}` : "";
+    const maxBuf = /maxBuffer/i.test(err.message || "");
+    const timedOut = err.killed || err.signal === "SIGTERM" || /ETIMEDOUT|timed out/i.test(err.message || "");
+
+    // A scan can stall on an expired Robinhood OAuth — the CLI prints the sign-in
+    // URL but never returns, so it's killed at the cap and looks like a plain
+    // timeout. Catch that in the partial output and escalate as auth instead.
+    if (/https?:\/\/[^\s"]*oauth|claude\.ai\/oauth|agent\.robinhood.*auth|sign.?in.*required|needs?.auth/i.test(detail)) {
+      const urlMatch = detail.match(/https?:\/\/[^\s"]+/);
+      await push({ type: "error", content: `⚠️ Robinhood auth looks expired (scan stalled ${elapsedS}s). Re-auth on the VPS: cd /root/spy-trader && source .env && claude -p "check robinhood"${urlMatch ? `\n\nURL: ${urlMatch[0]}` : ""}` });
+      console.error(`[${getETTime()}] Scan stalled on Robinhood auth (${elapsedS}s)`);
+    } else {
+      const reason = maxBuf ? `output too large after ${elapsedS}s (maxBuffer exceeded)`
+                   : /max turns/i.test(detail) ? `hit max turns (scan too long, ${elapsedS}s)`
+                   : timedOut ? `timed out after ${elapsedS}s (cap ${capS}s)`
+                   : (detail || err.message || "unknown error").slice(0, 200);
+      await push({ type: "error", content: `VPS scan error: ${reason}${tail}` });
+      console.error(`Scan error: ${reason}${tail}`);
+    }
   } finally {
     // ALWAYS reconcile account data + closed round trips, even if the scan above
     // errored or timed out. Win/loss + realized P&L are counted from order history
