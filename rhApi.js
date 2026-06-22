@@ -84,7 +84,7 @@ async function refreshAccessToken() {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-async function rhGet(url) {
+export async function rhGet(url) {
   const token = await getToken();
   const fullUrl = url.startsWith("http") ? url : `${RH_BASE}${url}`;
   const resp = await fetchWithTimeout(fullUrl, {
@@ -97,7 +97,7 @@ async function rhGet(url) {
 }
 
 // Paginate through all results if Robinhood paginates
-async function rhGetAll(url) {
+export async function rhGetAll(url) {
   const results = [];
   let next = url;
   while (next) {
