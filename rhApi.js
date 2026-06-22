@@ -18,6 +18,7 @@ const TIMEOUT_MS = 12000; // 12s max per request
 
 let _token = null;
 let _tokenExpiry = 0;
+let _envSeedTried = false; // env access-token seed is one-shot (don't re-seed a token that just 401'd)
 
 // Persist token state so it survives across fresh per-invocation processes (cron,
 // repeated CLI runs). Robinhood ROTATES the refresh token on every refresh
@@ -68,7 +69,8 @@ async function getToken() {
   // Prefer a valid access token (env seed on first boot) over refreshing — this
   // avoids rotating the refresh token until the access token actually expires.
   // A stale seed self-heals via the 401 retry in rhGet().
-  if (!store.access_token && process.env.ROBINHOOD_TOKEN) {
+  if (!store.access_token && !_envSeedTried && process.env.ROBINHOOD_TOKEN) {
+    _envSeedTried = true; // one-shot: if this seed 401s, the retry refreshes instead of re-seeding
     _token = process.env.ROBINHOOD_TOKEN;
     _tokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
     saveStore({ access_token: _token, expiry: _tokenExpiry, refresh_token: _refreshToken || null });
