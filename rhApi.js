@@ -45,13 +45,17 @@ function fetchWithTimeout(url, opts = {}) {
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 // In-memory refresh token (seeded from env var, updated after each refresh)
-let _refreshToken = process.env.ROBINHOOD_REFRESH_TOKEN || null;
+let _refreshToken = null; // seeded from env at call time in getToken() so dotenv-loaded creds are picked up
 
 export async function getRHToken() { return getToken(); }
 
 async function getToken() {
   // In-memory fast path (within a single process).
   if (_token && Date.now() < _tokenExpiry) return _token;
+
+  // Seed the refresh token from env on first use (call-time so a dotenv-loaded
+  // value is picked up); the persisted store below overrides it if newer.
+  if (!_refreshToken) _refreshToken = process.env.ROBINHOOD_REFRESH_TOKEN || null;
 
   // Reuse a still-valid access token from the persisted store — avoids hitting the
   // refresh endpoint (and rotating the single-use refresh token) on every run.

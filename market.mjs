@@ -24,7 +24,9 @@
 import { getAccountData, rhGet } from "./rhApi.js";
 
 const FMP_BASE = "https://financialmodelingprep.com/api/v3";
-const FMP_API_KEY = process.env.FMP_API_KEY;
+// FMP_API_KEY is read at call time inside fetchVix (not at module load) so it's
+// still picked up when the parent process loads .env via dotenv AFTER importing
+// this file.
 
 // ── ET time helpers ───────────────────────────────────────────────────────────
 function etTimeStr() {
@@ -80,6 +82,7 @@ async function fetchSpyBars() {
 // /api/v3 path (which is what we first hit). Try stable first, fall back to v3,
 // and surface both statuses if neither works.
 async function fetchVix() {
+  const FMP_API_KEY = process.env.FMP_API_KEY;
   if (!FMP_API_KEY) throw new Error("FMP_API_KEY not set");
   const urls = [
     `https://financialmodelingprep.com/stable/quote?symbol=%5EVIX&apikey=${FMP_API_KEY}`,

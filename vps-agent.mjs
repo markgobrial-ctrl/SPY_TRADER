@@ -17,6 +17,32 @@
  */
 
 import { execFileSync } from "child_process";
+import { getSnapshot, computeSignals } from "./market.mjs";
+
+// Load the project-dir .env with a tiny zero-dependency parser. The VPS agent has
+// no npm packages installed (only Node built-ins + the `claude` CLI), so we must
+// NOT depend on `dotenv`. cron's cwd isn't the script dir, and the Robinhood REST
+// + FMP creds the FAST_PATH layer needs live in /root/spy-trader/.env. This is
+// non-destructive: it never overrides a var the environment already set, so any
+// cron-provided RENDER_URL/PUSH_SECRET stay authoritative.
+(function loadDotEnv() {
+  try {
+    const txt = readFileSync(new URL("./.env", import.meta.url).pathname, "utf8");
+    for (const line of txt.split("\n")) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+      if (!m) continue;
+      let val = m[2];
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+      if (process.env[m[1]] === undefined) process.env[m[1]] = val;
+    }
+  } catch { /* no/unreadable .env — rely on the ambient environment */ }
+})();
+
+// FAST_PATH: gather market data in code (market.mjs) and only spawn the LLM when
+// a cycle is actually actionable (open SPY 0DTE position, or a setup firing in the
+// entry window). Off by default; ANY data-layer failure falls back to the full
+// legacy LLM+MCP scan, so live trading is never left without coverage.
+const FAST_PATH = process.env.FAST_PATH === "1";
 
 const RENDER_URL = process.env.RENDER_URL?.replace(/\/$/, "");
 const PUSH_SECRET = process.env.PUSH_SECRET;
@@ -304,7 +330,7 @@ function reconcileScan(rec) {
 
 // ── Run a Claude Code scan ────────────────────────────────────────────────────
 
-async function runScan(instruction = null) {
+async function runScan(instruction = null, opts = {}) {
   // Derive every concrete number from PARAMS so the task line can never
   // contradict the SYSTEM_PROMPT. Previously this hardcoded "9:35–11:00 AM ET
   // only", which fought the system prompt's entryWindowEnd (e.g. 13:00) and made
@@ -331,7 +357,7 @@ async function runScan(instruction = null) {
     const { ANTHROPIC_API_KEY: _1, ...envForClaude } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
       "--model", "claude-sonnet-4-6",
-      "--max-turns", "30",
+      "--max-turns", String(opts.maxTurns || 30),
       "-p", fullPrompt,
     ], {
       env: envForClaude,
@@ -415,6 +441,117 @@ async function runScan(instruction = null) {
     try { await pushAccountData(); } catch {}
     await push({ scanningNow: false });
   }
+}
+
+// ── FAST_PATH: code-gathered snapshot + gated LLM ─────────────────────────────
+
+function withinEntryWindow() {
+  const et = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const mins = et.getHours() * 60 + et.getMinutes();
+  const [sh, sm] = String(PARAMS.entryWindowStart).split(":").map(Number);
+  const [eh, em] = String(PARAMS.entryWindowEnd).split(":").map(Number);
+  return mins >= sh * 60 + sm && mins < eh * 60 + em;
+}
+
+function fastStatusLine(snap, sig, decision, reason) {
+  const pct = snap.spy.pctFromOpen != null ? `${snap.spy.pctFromOpen >= 0 ? "+" : ""}${snap.spy.pctFromOpen.toFixed(2)}%` : "n/a";
+  const sigs = sig.signals.length ? sig.signals.join("+") + (sig.direction ? ` ${sig.direction}` : "") : "none";
+  return `⚡ ${getETTime()} — SPY ${snap.spy.price} (${pct}), ${sig.vwapSide} VWAP, signals: ${sigs} → ${decision} (${reason}) · VIX ${snap.vix ?? "n/a"} · code`;
+}
+
+function journalCodeScan(snap, sig, decision, reason) {
+  try {
+    const rec = {
+      spy: snap.spy.price,
+      pctFromOpen: snap.spy.pctFromOpen != null ? Math.round(snap.spy.pctFromOpen * 100) / 100 : null,
+      vwapSide: sig.vwapSide, openingRange: sig.openingRange,
+      vix: snap.vix, trend: snap.trend,
+      signals: sig.signals, signalCount: sig.signalCount,
+      regimeOk: sig.vixOk, decision, direction: sig.direction,
+      reason, candidate: null, entry: null,
+      ts: Date.now(), etDate: getETDate(), etTime: getETTime(), source: "code",
+    };
+    appendFileSync(JOURNAL_FILE, JSON.stringify(rec) + "\n");
+    console.log(`[${getETTime()}] FAST journaled: ${decision} signals=${sig.signalCount} (${reason})`);
+  } catch (e) { console.error("Code journal failed:", e.message); }
+}
+
+// Build the instruction for a woken LLM scan: hand it the verified snapshot so it
+// skips the ~20-turn reconnaissance and goes straight to decide/execute.
+function buildFastInstruction(snap, sig) {
+  const spyPos = snap.positions.filter(p => p.isSpy0dte);
+  const other = snap.positions.filter(p => !p.isSpy0dte).map(p => `${p.symbol} ${p.type} ${p.strike} ${p.expiry}`);
+  return [
+    `Autonomous scan. Today ${snap.etDate}, ET ${snap.etTime}.`,
+    ``,
+    `A VERIFIED market snapshot was already gathered in code — TRUST these numbers and DO NOT re-fetch SPY price / VWAP / opening range / VIX / positions. (Re-fetch ONLY the 0DTE option chain with greeks IF you decide to enter, for strike selection.)`,
+    `- SPY ${snap.spy.price} | open ${snap.spy.open} | ${snap.spy.pctFromOpen?.toFixed(2)}% from open | hi ${snap.spy.high} / lo ${snap.spy.low}`,
+    `- VWAP ${snap.vwap?.toFixed(2)} → SPY is ${sig.vwapSide} VWAP`,
+    `- Opening range (9:30-9:45) ${snap.openingRange ? `${snap.openingRange.low}-${snap.openingRange.high}` : "n/a"} → ${sig.openingRange}`,
+    `- VIX ${snap.vix} → regime ${sig.vixOk ? "OK" : "OUT OF BAND"}`,
+    `- 5-min trend ${snap.trend}`,
+    `- Signals firing (code-computed, agreeing with direction): [${sig.signals.join(", ")}] → direction ${sig.direction ?? "none"} (count ${sig.signalCount}; need >=${PARAMS.minSignals})`,
+    `- Open SPY 0DTE positions: ${spyPos.length ? JSON.stringify(spyPos) : "none"}`,
+    other.length ? `- OTHER holdings — NEVER touch, never close: ${other.join("; ")}` : ``,
+    `- Account: buyingPower ${snap.account?.buyingPower}, portfolioValue ${snap.account?.portfolioValue}`,
+    ``,
+    `Apply the full decision framework with these numbers. Entry window ${PARAMS.entryWindowStart}-${PARAMS.entryWindowEnd} ET ONLY (manage-only after). Manage any open SPY 0DTE per the trailing-stop / underlying-level / time-of-day exit rules; close all SPY 0DTE by 3:45 PM ET. ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay. Execute autonomously. ALWAYS emit the ACCOUNT_JSON and SCAN_JSON footers.`,
+  ].filter(Boolean).join("\n");
+}
+
+async function runScanFast() {
+  let snap;
+  try {
+    snap = await getSnapshot();
+  } catch (e) {
+    console.error("FAST_PATH snapshot threw — falling back to full scan:", e.message);
+    return runScan();
+  }
+  // If the code data path is unhealthy (no price), fall back to the legacy LLM+MCP
+  // scan so we never lose coverage on a bad data day or if the REST creds expire.
+  if (!snap || snap.spy.price == null) {
+    const errs = (snap?.errors || []).join("; ").slice(0, 160);
+    console.error(`FAST_PATH snapshot unhealthy (${errs}) — falling back to full scan`);
+    await push({ type: "info", content: `⚡ Fast snapshot incomplete${errs ? ` (${errs})` : ""} — using full scan` });
+    return runScan();
+  }
+
+  const sig = computeSignals(snap, PARAMS);
+  const spyPositions = snap.positions.filter(p => p.isSpy0dte && Number(p.qty) !== 0);
+  const hasPos = spyPositions.length > 0;
+  const inWindow = withinEntryWindow();
+  // Wake the LLM if there's a position to manage, or a plausible entry setup in the
+  // window. Over-inclusive by design: the LLM still makes every real decision; we
+  // only skip cycles the strategy itself guarantees are no-ops (flat & nothing firing,
+  // or flat & past the entry window).
+  const wakeThreshold = Math.max(1, (PARAMS.minSignals || 2) - 1);
+  const actionable = hasPos || (inWindow && sig.signalCount >= wakeThreshold);
+
+  // Refresh the dashboard book from the cheap, accurate snapshot every cycle.
+  await push({ account: {
+    accountNumber: ACCOUNT_NUMBER,
+    buyingPower: snap.account?.buyingPower,
+    portfolioValue: snap.account?.portfolioValue,
+    positions: snap.positions,
+  } });
+  await push({ type: "scan_start" });
+
+  if (!actionable) {
+    const reason = !inWindow
+      ? (hasPos ? "manage-only" : "flat, outside entry window")
+      : `only ${sig.signalCount}/${PARAMS.minSignals} signals firing`;
+    journalCodeScan(snap, sig, "WAIT", reason);
+    await push({ type: "info", content: fastStatusLine(snap, sig, "WAIT", reason), scanningNow: false });
+    console.log(`[${getETTime()}] FAST skip — ${reason}`);
+    // Closes / realized P&L are reconciled by the separate 15-min account refresh,
+    // so skipping the LLM here drops no trade accounting.
+    return;
+  }
+
+  // Actionable → wake the LLM with the snapshot and a smaller turn budget (no
+  // 20-turn recon needed). Same lock + wall-clock timeout as a normal scan.
+  console.log(`[${getETTime()}] FAST wake LLM — ${hasPos ? "manage" : "entry"} (signals ${sig.signalCount})`);
+  await runScan(buildFastInstruction(snap, sig), { maxTurns: 16 });
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -543,4 +680,5 @@ if (!scanDue) {
   console.log(`Next scan in ~${wait}m`);
   process.exit(0);
 }
-await runScan();
+if (FAST_PATH) await runScanFast();
+else await runScan();
