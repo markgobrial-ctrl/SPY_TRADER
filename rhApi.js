@@ -169,10 +169,21 @@ export async function rhGetAll(url) {
  * positions: [{ type, strike, expiry, qty, avg_cost, current_price, pnl_pct }]
  */
 export async function getAccountData() {
-  // 1. Portfolio (buying power + total equity)
+  // 1a. Buying power from the ACCOUNT object — the true tradable buying power
+  // (incl. margin). The portfolio's withdrawable_amount is only withdrawable CASH
+  // and badly understates BP on a margin account (read $201 when real BP was
+  // ~$1,519). This REST login sees a single account = the agentic account.
+  let buying_power = 0;
+  try {
+    const accts = await rhGet("/accounts/");
+    const acct = (accts.results || [])[0] || {};
+    buying_power = parseFloat(acct.buying_power ?? acct.cash ?? 0) || 0;
+  } catch {}
+
+  // 1b. Portfolio (total equity / portfolio value)
   const portfolioData = await rhGet("/portfolios/");
   const p = portfolioData.results?.[0] || {};
-  const buying_power = parseFloat(p.withdrawable_amount || 0);
+  if (!buying_power) buying_power = parseFloat(p.withdrawable_amount || 0) || 0;
   const portfolio_value = parseFloat(
     p.extended_hours_equity || p.equity || p.market_value || 0
   );
