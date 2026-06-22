@@ -76,8 +76,8 @@ async function getPending() {
   }
 }
 
-// ── Scan state (persisted between cron runs via a lock file) ──────────────────
-import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
+// ── Scan state + single-run lock (coordinate the per-minute cron invocations) ──
+import { readFileSync, writeFileSync, existsSync, appendFileSync, openSync, writeSync, closeSync, unlinkSync, statSync } from "fs";
 import { loadParams, paramSources, loadLayers, setManual, resetParams } from "./shadow.mjs";
 
 const JOURNAL_FILE = "/root/spy-trader/journal.jsonl";
@@ -122,6 +122,63 @@ function loadState() {
 function saveState(s) {
   writeFileSync(STATE_FILE, JSON.stringify(s));
 }
+
+// ── Single-run lock ───────────────────────────────────────────────────────────
+// cron fires this script every minute, but one invocation can run for several
+// minutes (the account-refresh + scan `claude` subprocesses). Without a mutex a
+// later tick starts an overlapping run — the duplicate scan seen on the dashboard,
+// and the subprocess contention that then trips the 4-min scan timeout. This
+// O_EXCL lock guarantees one run at a time; a lock older than LOCK_STALE_MS is
+// assumed to be from a crashed run (the exit handler can't fire on SIGKILL/OOM)
+// and reclaimed.
+const LOCK_FILE = "/tmp/spy-agent.lock";
+const LOCK_STALE_MS = 15 * 60 * 1000; // comfortably above the worst-case single run (~10 min)
+let holdsLock = false;
+
+function lockIsStale() {
+  try {
+    const info = JSON.parse(readFileSync(LOCK_FILE, "utf8"));
+    if (typeof info.ts === "number") return Date.now() - info.ts > LOCK_STALE_MS;
+  } catch {}
+  // Unreadable/empty/corrupt lock — fall back to the file's mtime so a genuinely
+  // stuck lock can still be reclaimed, without stealing one that's only
+  // momentarily mid-write.
+  try { return Date.now() - statSync(LOCK_FILE).mtimeMs > LOCK_STALE_MS; } catch { return true; }
+}
+
+function writeLock() {
+  const fd = openSync(LOCK_FILE, "wx"); // wx = O_CREAT|O_EXCL — throws EEXIST if it exists
+  writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+  closeSync(fd);
+  holdsLock = true;
+}
+
+// Returns true if this process now owns the lock, false if a live run holds it.
+function acquireLock() {
+  try {
+    writeLock();
+    return true;
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    if (!lockIsStale()) return false;        // a live run holds it — bail this tick
+    try { unlinkSync(LOCK_FILE); } catch {}   // reclaim a crashed run's lock
+    try { writeLock(); return true; }
+    catch { return false; }                   // lost the steal race to another tick — bail
+  }
+}
+
+function releaseLock() {
+  if (!holdsLock) return;
+  try {
+    // Only remove the lock if it's still ours (don't delete one a later run stole).
+    const info = JSON.parse(readFileSync(LOCK_FILE, "utf8"));
+    if (info.pid === process.pid) unlinkSync(LOCK_FILE);
+  } catch {}
+  holdsLock = false;
+}
+// Fires on normal completion and every process.exit() path below; covers all
+// exits except hard kills (handled by the stale-lock reclaim above).
+process.on("exit", releaseLock);
 
 // ── Tunable strategy parameters ───────────────────────────────────────────────
 // PARAMS come from params.json (single source: shadow.mjs loadParams + defaults).
@@ -334,6 +391,15 @@ async function runScan(instruction = null) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 const state = loadState();
+
+// Serialize cron ticks before doing anything expensive (or consuming the pending
+// action). If a previous invocation is still running its account refresh or scan,
+// bail immediately rather than starting an overlapping run.
+if (!acquireLock()) {
+  console.log("Another agent run in progress — skipping this tick");
+  process.exit(0);
+}
+
 const { enabled, interval, action } = await getPending();
 
 // Push current strategy levers + change/proposal history so the dashboard can
@@ -406,6 +472,20 @@ Rules: numbers (not strings) for numeric fields; avg_cost/current_price are per-
   }
 }
 
+// Decide whether a scan is due and CLAIM THE SLOT up front, before the
+// long-running account refresh below. pushAccountData() shells out to `claude`
+// (up to ~150s); the old code wrote lastScanTime only after that call, so a tick
+// firing during the refresh read a stale timestamp and launched a duplicate scan.
+// Writing it here means the next tick already sees this scan accounted for. (The
+// run-lock above is the primary guard; this is the belt-and-suspenders half.)
+const intervalMs = (interval || 10) * 60 * 1000;
+const sinceLastScan = state.lastScanTime ? Date.now() - state.lastScanTime : Infinity;
+const scanDue = enabled && isMarketHours() && sinceLastScan >= intervalMs;
+if (scanDue) {
+  state.lastScanTime = Date.now();
+  saveState(state); // claim the slot now, before any long-running work
+}
+
 // Refresh account data (buying power, portfolio value, open positions) on a
 // wide weekday window — 7:00 AM to 8:00 PM ET — so the dashboard shows the book
 // pre-market and after-hours, not just during regular trading hours. Once every
@@ -420,21 +500,18 @@ const accountWindow = (() => {
 if (accountWindow && (!state.lastAccountPush || Date.now() - state.lastAccountPush > 15 * 60 * 1000)) {
   await pushAccountData();
   await pushStrategy();
-  saveState({ ...state, lastAccountPush: Date.now() });
+  state.lastAccountPush = Date.now();
+  saveState(state);
 }
 
 // Skip if disabled or outside market hours
 if (!enabled) { console.log("Agent disabled"); process.exit(0); }
 if (!isMarketHours()) { console.log("Outside market hours"); process.exit(0); }
 
-// Enforce scan interval
-const intervalMs = (interval || 10) * 60 * 1000;
-if (state.lastScanTime && Date.now() - state.lastScanTime < intervalMs) {
-  const wait = Math.round((intervalMs - (Date.now() - state.lastScanTime)) / 60000);
+// Run the scan if it was due (the slot was already claimed above).
+if (!scanDue) {
+  const wait = Math.round((intervalMs - sinceLastScan) / 60000);
   console.log(`Next scan in ~${wait}m`);
   process.exit(0);
 }
-
-// Run the scan
-saveState({ ...state, lastScanTime: Date.now() });
 await runScan();
