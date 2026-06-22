@@ -139,7 +139,12 @@ export async function getAccountData() {
             rhGet(`/marketdata/options/${optionId}/`),
           ]);
 
-          const avg_cost = parseFloat(pos.average_price || 0);
+          // Robinhood's average_price is per CONTRACT (price/share × multiplier),
+          // but the option mark_price is per SHARE — normalize avg to per-share so
+          // the two are comparable and pnl_pct is correct. (Sanity check: a 4-lot
+          // 0DTE call in a ~$2k account only fits if average_price is per-contract.)
+          const multiplier = parseFloat(pos.trade_value_multiplier || 100) || 100;
+          const avg_cost = parseFloat(pos.average_price || 0) / multiplier;
           const current_price = parseFloat(
             quote.adjusted_mark_price || quote.mark_price || 0
           );
@@ -150,6 +155,7 @@ export async function getAccountData() {
               : 0;
 
           return {
+            symbol: instrument.chain_symbol, // underlying ticker, e.g. "SPY"
             type: instrument.type, // "call" or "put"
             strike: parseFloat(instrument.strike_price),
             expiry: instrument.expiration_date,

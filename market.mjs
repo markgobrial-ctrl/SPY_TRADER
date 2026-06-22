@@ -76,14 +76,31 @@ async function fetchSpyBars() {
     .filter(b => Number.isFinite(b.close));
 }
 
+// FMP reorganized into "stable" endpoints; newer keys return 403 on the legacy
+// /api/v3 path (which is what we first hit). Try stable first, fall back to v3,
+// and surface both statuses if neither works.
 async function fetchVix() {
   if (!FMP_API_KEY) throw new Error("FMP_API_KEY not set");
-  const r = await fetch(`${FMP_BASE}/quote/%5EVIX?apikey=${FMP_API_KEY}`);
-  if (!r.ok) throw new Error(`FMP VIX HTTP ${r.status}`);
-  const arr = await r.json();
-  const price = Array.isArray(arr) && arr[0] ? parseFloat(arr[0].price) : NaN;
-  if (!Number.isFinite(price)) throw new Error(`FMP VIX bad payload: ${JSON.stringify(arr).slice(0, 200)}`);
-  return price;
+  const urls = [
+    `https://financialmodelingprep.com/stable/quote?symbol=%5EVIX&apikey=${FMP_API_KEY}`,
+    `${FMP_BASE}/quote/%5EVIX?apikey=${FMP_API_KEY}`,
+  ];
+  const problems = [];
+  for (const url of urls) {
+    const which = url.includes("/stable/") ? "stable" : "v3";
+    try {
+      const r = await fetch(url);
+      if (!r.ok) { problems.push(`HTTP ${r.status} (${which})`); continue; }
+      const arr = await r.json();
+      const row = Array.isArray(arr) ? arr[0] : arr;
+      const price = row ? parseFloat(row.price ?? row.previousClose) : NaN;
+      if (Number.isFinite(price)) return price;
+      problems.push(`bad payload (${which}): ${JSON.stringify(arr).slice(0, 120)}`);
+    } catch (e) {
+      problems.push(`${e.message} (${which})`);
+    }
+  }
+  throw new Error(`FMP VIX failed — ${problems.join(" | ")}`);
 }
 
 // ── Derived metrics (pure functions over bars) ─────────────────────────────────
@@ -159,7 +176,7 @@ export async function getSnapshot() {
   const todayISO = etISODate();
   const positions = (acct?.positions || []).map(p => ({
     ...p,
-    isSpy0dte: (p.symbol ? p.symbol === "SPY" : true) && p.expiry === todayISO,
+    isSpy0dte: p.symbol === "SPY" && p.expiry === todayISO,
   }));
 
   return {
