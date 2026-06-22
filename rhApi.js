@@ -4,6 +4,8 @@
  * Token is cached in memory and refreshed when it expires.
  */
 
+import { readFileSync, writeFileSync, existsSync } from "fs";
+
 const RH_BASE = "https://api.robinhood.com";
 // Standard Robinhood iOS client_id (public knowledge, used by all unofficial clients)
 const CLIENT_ID = "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS";
@@ -16,6 +18,20 @@ const TIMEOUT_MS = 12000; // 12s max per request
 
 let _token = null;
 let _tokenExpiry = 0;
+
+// Persist token state so it survives across fresh per-invocation processes (cron,
+// repeated CLI runs). Robinhood ROTATES the refresh token on every refresh
+// (single-use); without persistence the rotated token is lost and the next
+// process reuses the dead one → "invalid_grant". The store keeps the latest
+// access token (reused until it expires) and the latest refresh token.
+const TOKEN_STORE = process.env.RH_TOKEN_STORE || new URL("./.rh-token.json", import.meta.url).pathname;
+function loadStore() {
+  try { return existsSync(TOKEN_STORE) ? JSON.parse(readFileSync(TOKEN_STORE, "utf8")) : {}; }
+  catch { return {}; }
+}
+function saveStore(s) {
+  try { writeFileSync(TOKEN_STORE, JSON.stringify(s), { mode: 0o600 }); } catch { /* best-effort */ }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -33,24 +49,48 @@ let _refreshToken = process.env.ROBINHOOD_REFRESH_TOKEN || null;
 export async function getRHToken() { return getToken(); }
 
 async function getToken() {
+  // In-memory fast path (within a single process).
   if (_token && Date.now() < _tokenExpiry) return _token;
 
-  // 1. Try refresh token (long-lived, set once, never expires manually)
-  if (_refreshToken) {
-    return refreshAccessToken();
+  // Reuse a still-valid access token from the persisted store — avoids hitting the
+  // refresh endpoint (and rotating the single-use refresh token) on every run.
+  const store = loadStore();
+  if (store.access_token && store.expiry && Date.now() < store.expiry - 60_000) {
+    _token = store.access_token;
+    _tokenExpiry = store.expiry;
+    if (store.refresh_token) _refreshToken = store.refresh_token;
+    return _token;
   }
+  // Always prefer the freshest refresh token: the rotated one in the store over
+  // the env seed (which is only the first-boot value).
+  if (store.refresh_token) _refreshToken = store.refresh_token;
 
-  // 2. Fall back to pre-set access token from env (first boot before refresh kicks in)
-  if (process.env.ROBINHOOD_TOKEN) {
+  // Prefer a valid access token (env seed on first boot) over refreshing — this
+  // avoids rotating the refresh token until the access token actually expires.
+  // A stale seed self-heals via the 401 retry in rhGet().
+  if (!store.access_token && process.env.ROBINHOOD_TOKEN) {
     _token = process.env.ROBINHOOD_TOKEN;
     _tokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
+    saveStore({ access_token: _token, expiry: _tokenExpiry, refresh_token: _refreshToken || null });
     return _token;
   }
 
+  if (_refreshToken) return refreshAccessToken();
+
   throw new Error(
-    "No Robinhood credentials found. Run get-rh-token.mjs locally and set " +
-    "ROBINHOOD_TOKEN and ROBINHOOD_REFRESH_TOKEN on Render."
+    "No Robinhood credentials found. Run get-rh-token.mjs and set " +
+    "ROBINHOOD_TOKEN and ROBINHOOD_REFRESH_TOKEN in the VPS .env."
   );
+}
+
+// Drop the current access token (memory + store) so the next call refreshes.
+function invalidateToken() {
+  _token = null;
+  _tokenExpiry = 0;
+  const s = loadStore();
+  delete s.access_token;
+  delete s.expiry;
+  saveStore(s);
 }
 
 async function refreshAccessToken() {
@@ -77,19 +117,27 @@ async function refreshAccessToken() {
 
   _token = data.access_token;
   _tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
-  // Update in-memory refresh token if Robinhood rotated it
+  // Robinhood rotates the refresh token on every refresh — keep the new one and
+  // persist it (plus the fresh access token) so the next process doesn't reuse a
+  // dead refresh token.
   if (data.refresh_token) _refreshToken = data.refresh_token;
+  saveStore({ access_token: _token, expiry: _tokenExpiry, refresh_token: _refreshToken || null });
   return _token;
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-export async function rhGet(url) {
+export async function rhGet(url, _retry = true) {
   const token = await getToken();
   const fullUrl = url.startsWith("http") ? url : `${RH_BASE}${url}`;
   const resp = await fetchWithTimeout(fullUrl, {
     headers: { Authorization: `Bearer ${token}`, "User-Agent": UA },
   });
+  // Access token died early (e.g. a stale env seed) — drop it and refresh once.
+  if (resp.status === 401 && _retry) {
+    invalidateToken();
+    return rhGet(url, false); // getToken() will refresh via the refresh token
+  }
   if (!resp.ok) {
     throw new Error(`Robinhood API error ${resp.status} on ${fullUrl}`);
   }

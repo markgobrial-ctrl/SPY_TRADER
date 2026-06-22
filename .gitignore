@@ -6,4 +6,5 @@ reviews/
 params.json
 manual.json
 learned.json
+.rh-token.json
 *.log
