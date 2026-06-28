@@ -44,6 +44,12 @@ function etISODate() {
   }).format(new Date());
   return p; // en-CA formats as YYYY-MM-DD
 }
+// ET date (YYYY-MM-DD) of a specific timestamp — used to reject stale (non-today) bars.
+function etISODateOf(isoTs) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date(isoTs));
+}
 // Minutes-since-midnight ET for a given ISO timestamp (used to bucket bars).
 function etMinutesOf(isoTs) {
   const et = new Date(new Date(isoTs).toLocaleString("en-US", { timeZone: "America/New_York" }));
@@ -157,7 +163,7 @@ export async function getSnapshot() {
   ]);
 
   const quote = quoteR.status === "fulfilled" ? quoteR.value : null;
-  const bars  = barsR.status  === "fulfilled" ? barsR.value  : [];
+  const allBars = barsR.status === "fulfilled" ? barsR.value : [];
   const vix   = vixR.status   === "fulfilled" ? vixR.value   : null;
   const acct  = acctR.status  === "fulfilled" ? acctR.value  : null;
 
@@ -165,6 +171,12 @@ export async function getSnapshot() {
   for (const [name, r] of [["quote", quoteR], ["bars", barsR], ["vix", vixR], ["account", acctR]]) {
     if (r.status === "rejected") errors.push(`${name}: ${r.reason?.message || r.reason}`);
   }
+  // Reject STALE bars: keep only bars dated TODAY (ET). Guards against the historicals
+  // feed returning the prior session (e.g. pre-open), which would compute open/VWAP/OR
+  // off the wrong day. If this leaves no bars, signal fields degrade to null → safe WAIT.
+  const todayISO = etISODate();
+  const bars = allBars.filter(b => etISODateOf(b.t) === todayISO);
+  if (allBars.length && !bars.length) errors.push("bars: stale (none dated today) — signals degraded");
 
   const open = bars.length ? bars[0].open : null;
   const price = quote?.price ?? (bars.length ? bars[bars.length - 1].close : null);
@@ -176,7 +188,6 @@ export async function getSnapshot() {
   const low = bars.length ? Math.min(...bars.map(b => b.low)) : null;
 
   // Tag SPY 0DTE positions (today's expiry) so the management logic can find them.
-  const todayISO = etISODate();
   const positions = (acct?.positions || []).map(p => ({
     ...p,
     isSpy0dte: p.symbol === "SPY" && p.expiry === todayISO,
@@ -190,6 +201,7 @@ export async function getSnapshot() {
       bid: quote?.bid ?? null, ask: quote?.ask ?? null,
     },
     vwap, openingRange: or, vix, trend,
+    lastBarClose: bars.length ? bars[bars.length - 1].close : null,
     account: acct ? { buyingPower: acct.buying_power, portfolioValue: acct.portfolio_value } : null,
     positions,
     barsCount: bars.length,
@@ -217,10 +229,14 @@ export function computeSignals(snap, params) {
     const dir = snap.spy.pctFromOpen > 0 ? "call" : "put";
     fired.move = dir; votes[dir]++;
   }
-  // vwap: clearly on one side (small buffer so "at"/touching does NOT fire)
+  // vwap: price must be CLEARLY on one side (>=0.10%, not a 0.03% rounding wobble) AND the
+  // last completed 5-min bar must confirm it ("holding it", per the strategy) — kills the
+  // flip-flop when price oscillates right around VWAP.
   if (snap.vwap != null && snap.spy.price != null) {
     const diffPct = ((snap.spy.price - snap.vwap) / snap.vwap) * 100;
-    if (Math.abs(diffPct) >= 0.03) {
+    const lc = snap.lastBarClose;
+    const holding = lc == null || Math.sign(lc - snap.vwap) === Math.sign(snap.spy.price - snap.vwap);
+    if (Math.abs(diffPct) >= 0.10 && holding) {
       const dir = diffPct > 0 ? "call" : "put";
       fired.vwap = dir; votes[dir]++;
     }
