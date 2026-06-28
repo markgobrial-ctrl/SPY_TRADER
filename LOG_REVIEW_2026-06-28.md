@@ -186,6 +186,35 @@ IV shifts and fills add noise. Sample is 22 trades in one low-trend regime — o
 a tight target caps a runner (6/15 would have made far more held). The grid is broad (+15 to +40 all
 strongly positive), so this isn't a knife-edge fit, but forward-test on small size before trusting it.
 
+## Follow-up analysis (Jun 28): stop, take-profit & time-of-day
+
+Tested on the same 22-trade tape (in-sample, one mean-reverting week — treat as hypotheses):
+
+- **Is −40% the right stop?** It's now nearly irrelevant. With the +25% resting take-profit, 15 of 22
+  trades hit the target before any stop mattered; sweeping the stop −20%→−50% moves the week's P&L in a
+  noisy $185–$367 band with no clean optimum. −40% is a fine (slightly loose) backstop; ~25–30% is
+  marginally better in-sample but that's noise. Don't go below ~25% — watcher latency + whipsaw-out.
+
+- **Take-profit level — fixed beats trailing, decisively.** Flat +15% was best in-sample (+$383, 20/22
+  win) but is spread- and boundary-fragile (the +15-vs-+20 gap rests on 3–4 trades' exact peaks); +20–25%
+  is the robust zone. **Trailing the winner FAILS here**: arm+30/trail25 = +$62, arm+40/trail30 = −$94,
+  versus +$185–383 for fixed targets. In this regime you bank the spike, you don't ride it. Scale-out is
+  also impossible at 1 contract. Decision: keep a flat take-profit in +15–25 (held at +25); let real fills
+  settle the exact number rather than tuning on one week.
+
+- **Time of day is the most durable signal.** Mean favorable excursion by entry window: 9:35–10:00 **+103%**,
+  10:00–11:00 ~+67%, 11:00–11:30 **+30%** (worst, only losing bucket), 11:30–12:30 +42%. The open has ~3×
+  the move of late morning. Best used for ENTRY selection (concentrate at the open; be picky 11:00–12:30),
+  not a multi-tier exit — tiers added only ~$40, within noise. Shipped as prompt guidance, not a hard cap.
+
+- **Over-trading, revisited.** Under disciplined exits the 2nd+ trades of the day were net positive (+$140
+  vs +$45 for first trades), so a hard daily-trade cap isn't warranted — the −$978 was give-back, not
+  frequency. (Calls vs puts, +$6 vs +$178, is just that week's downward drift on n=6 — noise, ignore.)
+
+- **Sizing is the real growth governor.** Long-run growth is geometric; with an edge estimated from one
+  week, stay at 1 contract (already enforced below $1,500 equity) and scale only as the edge confirms
+  (fractional Kelly). Over-sizing a noisy edge is the main risk to compounding.
+
 ## Caveats
 
 Six sessions and 22 trades is a small sample, and one of them (6/15) sits two weeks before the

@@ -251,8 +251,10 @@ Step 3 — Setup Requirements:
 Direction = the side with the MAJORITY of FIRING signals. Confluence counts ONLY the firing signals that AGREE with that direction; opposing signals never count, and if the two sides tie it is a CONFLICT → WAIT. Enter only if the agreeing-signal count is >= ${PARAMS.minSignals}.
 CONSISTENCY (hard, applies to SCAN_JSON): "signals" must list exactly the firing signals that agree with "direction"; "signalCount" MUST equal that array's length; for a put the candidate delta is NEGATIVE, for a call POSITIVE. Never report a count that disagrees with the array.
 DATA-MISSING DEGRADATION: vwap and or_breakout need intraday bars. Before declaring either unavailable, TRY to derive them yourself: pull today's 5-min (or 1-min) SPY bars (robinhood get_equity_historicals, or the FMP chart / technicalIndicators endpoints), compute session VWAP and the 9:30–9:45 high/low, and set vwapSide / openingRange from them. Only if intraday bars truly cannot be fetched, mark the unobservable signal(s) "na" and decide on the OBSERVABLE signals — but you still need >= ${PARAMS.minSignals} AGREEING observable signals; if fewer than ${PARAMS.minSignals} signals are even observable, WAIT. Never manufacture confluence from missing data. (Market internals like TICK/advance-decline are not on the data plan — do not attempt to fetch them.)
-(C) TIMING:
+(C) TIMING (time-of-day expectancy — from the Jun 28 trade-history analysis):
 - No entries before 9:35 (ignore the 9:30–9:35 noise).
+- HIGHEST-expectancy window is the OPEN, 9:35–10:30 ET — by far the largest favorable moves in the data (avg peak excursion ~+85–103% vs ~+30–40% later). Prefer your full-conviction entries here.
+- WEAKEST window is ~11:00–12:30 ET (smallest moves, most chop). Require stronger confluence (lean ≥3 agreeing signals) or simply PASS — never force a trade in the lull. This is selectivity, not a hard cap.
 - Avoid lunch chop (~12:00–13:30 ET) unless a clean trend is clearly intact.
 - Do NOT open a new position in the 15 min before a scheduled econ release unless that release IS the catalyst you intend to trade.
 
