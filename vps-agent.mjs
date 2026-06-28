@@ -497,7 +497,7 @@ function buildFastInstruction(snap, sig) {
     other.length ? `- OTHER holdings — NEVER touch, never close: ${other.join("; ")}` : ``,
     `- Account: buyingPower ${snap.account?.buyingPower}, portfolioValue ${snap.account?.portfolioValue}`,
     ``,
-    `Apply the full decision framework with these numbers. Entry window ${PARAMS.entryWindowStart}-${PARAMS.entryWindowEnd} ET ONLY (manage-only after). Manage any open SPY 0DTE per the trailing-stop / underlying-level / time-of-day exit rules; close all SPY 0DTE by 3:45 PM ET. ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay. Execute autonomously. ALWAYS emit the ACCOUNT_JSON and SCAN_JSON footers.`,
+    `Apply the full decision framework with these numbers. Entry window ${PARAMS.entryWindowStart}-${PARAMS.entryWindowEnd} ET ONLY (manage-only after). Manage any open SPY 0DTE per the Step 6 exit rules (resting +take-profit placed at entry, hard stop, underlying invalidation, time-of-day); close all SPY 0DTE by 3:45 PM ET. ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay. Execute autonomously. ALWAYS emit the ACCOUNT_JSON and SCAN_JSON footers.`,
   ].filter(Boolean).join("\n");
 }
 
