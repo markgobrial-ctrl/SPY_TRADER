@@ -267,15 +267,15 @@ Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE
 
 Step 5 — Size (RISK-BASED, not fixed count): Your hard stop is ${PARAMS.stopPct}% of premium. Risk budget per trade = the smaller of $160 or 8% of account equity. Contracts = floor(riskBudget ÷ (entryPremium × 100 × ${(PARAMS.stopPct / 100).toFixed(2)})). Then clamp to ${PARAMS.maxContracts} contract(s) max, and NEVER exceed $${PARAMS.maxOutlay} total outlay. If account < $1,500: 1 contract max. If even 1 contract would risk more than the budget or cost > $${PARAMS.maxOutlay}, pick a cheaper qualifying strike or SKIP — never over-risk.
 
-Step 6 — Exits (let winners run, protect gains):
-- TRAILING STOP: once up ≥80%, trail a stop ${PARAMS.trailPct}% below the position's premium high-water mark; raise it on every new high, exit when hit. This replaces any fixed profit cap and lets moonshots run (target zone ~${PARAMS.targetPct}%+).
-- At +100%, the trail must be at/above breakeven — never let a doubled position round-trip to a loss.
-- UNDERLYING-BASED exit: also exit if SPY loses the level that justified the trade (closes back through VWAP or back inside the opening range against you), even if the premium stop hasn't triggered. Price action leads premium.
-- TIME-BASED: after 13:00 ET tighten the trail to 25%; after 14:30 ET take profits readily — theta and pin risk dominate late.
+Step 6 — Exits (take the spike: fixed take-profit placed AT ENTRY):
+- TAKE-PROFIT (PRIMARY): the MOMENT an entry fills, immediately place a resting SELL-to-CLOSE LIMIT order for the FULL filled quantity at fillPremium × (1 + ${PARAMS.targetPct}/100), rounded to the nearest cent, time_in_force "gfd". These 0DTE momentum pops last minutes then mean-revert — a resting limit banks the move even between scans, instead of waiting for the next scan and giving it back. Do NOT trail for a moonshot and do NOT hold for a bigger number: ${PARAMS.targetPct}% is the target, full stop. Note the order id so you can cancel it later.
+- HARD STOP / INVALIDATION (SECONDARY, monitored each scan): if the position is at −${PARAMS.stopPct}% premium OR SPY has lost the level that justified the trade (back through VWAP / back inside the opening range against you), exit immediately. Price action leads premium.
+- NEVER DOUBLE-SELL (CRITICAL — real money): there must never be two live sell orders on one contract. Before placing ANY stop / invalidation / EOD market close, you MUST first CANCEL the resting take-profit limit for that position and confirm the cancel, THEN close. If the take-profit limit already filled, the position is flat — do nothing.
+- LATE-DAY: after 14:30 ET theta and pin risk dominate — if a position is still open and not about to hit its take-profit, cancel the resting limit and close at market rather than waiting.
 
 Step 7 — Stop (HARD): Exit at ${PARAMS.stopPct}% premium loss OR when the underlying invalidates the setup (back through VWAP / opening range against you), whichever comes first. No averaging down, ever.
 
-Step 8 — Manage every scan: re-check trailing stop, underlying level, and time-of-day for each open SPY 0DTE position. Trail/stop hit → close. Setup invalidated → close. Past 3:45 PM → close all SPY 0DTE positions (SPY 0DTE only — leave every other holding untouched).
+Step 8 — Manage every scan: for each open SPY 0DTE position, first confirm its resting take-profit limit is still working — if it's missing (and the position is still open), re-place it at the entry-based level. Then re-check the hard stop, the underlying level, and the time of day. Stop or invalidation hit → CANCEL the resting take-profit limit, confirm, then close. Past 3:45 PM → cancel any resting take-profit limit, then close all SPY 0DTE positions (SPY 0DTE only — leave every other holding untouched).
 ORDER EXECUTION: use marketable LIMIT orders (price a few cents through the mid), never naked market orders — the 0DTE spread is a tax. Prefer entering on a small pullback toward VWAP over chasing an extended candle.
 RISK GUARDRAILS: STOP trading for the day after 2 consecutive losing trades. After your first profitable close of the day, take at most one more trade and only on A+ confluence — otherwise bank the day. (The server also enforces a hard daily loss limit and will disable you if hit.)
 
@@ -302,7 +302,7 @@ SCAN_JSON is a machine-readable snapshot of THIS scan for the learning journal �
 - entry: if you actually ENTERED this scan, {"strike":<n>,"delta":<n>,"contracts":<n>,"premium":<n>}; otherwise null.
 Keep it on ONE line of valid JSON (candidate and entry are the only nested objects).
 
-HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY ${PARAMS.entryWindowStart}–${PARAMS.entryWindowEnd} ET entries. Directional, no spreads. Risk-based sizing, ${PARAMS.maxContracts} contract(s) max, max $${PARAMS.maxOutlay} outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <${PARAMS.vixMin} or >${PARAMS.vixMax}. Need real directional confluence (≥${PARAMS.minSignals} signals), never a lone % move. Marketable limit orders only. STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
+HARD RULES: ONLY trade SPY 0DTE options — NEVER sell, close, or modify any other option or any equity, even on "close all". ONLY ${PARAMS.entryWindowStart}–${PARAMS.entryWindowEnd} ET entries. Directional, no spreads. Risk-based sizing, ${PARAMS.maxContracts} contract(s) max, max $${PARAMS.maxOutlay} outlay. NEVER hold a SPY 0DTE position past 3:45 PM. NEVER VIX <${PARAMS.vixMin} or >${PARAMS.vixMax}. Need real directional confluence (≥${PARAMS.minSignals} signals), never a lone % move. Marketable limit orders only; place the +${PARAMS.targetPct}% take-profit limit AT ENTRY and never hold a winner past it (cancel it before any stop/EOD close — never two live sell orders on one contract). STOP for the day after 2 consecutive losses. No averaging down. Execute autonomously.`;
 
 // ── Journal hygiene ───────────────────────────────────────────────────────────
 // Make a scan record self-consistent before it enters the learning journal. The
@@ -339,7 +339,7 @@ async function runScan(instruction = null, opts = {}) {
     `Autonomous scan. Today is ${getETDate()}, ET time is ${getETTime()}.`,
     `Run full decision framework: check SPY vs open (need >${PARAMS.minMovePct}% move), VIX (need ${PARAMS.vixMin}–${PARAMS.vixMax}), open positions.`,
     `Entry window ${PARAMS.entryWindowStart}–${PARAMS.entryWindowEnd} ET ONLY (manage-only after). ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay.`,
-    `Let winners run to ${PARAMS.targetPct}%+. Cut losers at ${PARAMS.stopPct}%. Close all SPY 0DTE by 3:45 PM ET.`,
+    `Take profit via a resting sell-limit placed AT ENTRY at +${PARAMS.targetPct}% (cancel it before any stop/EOD close — never double-sell). Cut losers at ${PARAMS.stopPct}%. Close all SPY 0DTE by 3:45 PM ET.`,
     `Execute autonomously.`,
   ].join(" ");
 

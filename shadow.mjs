@@ -36,7 +36,7 @@ export const DEFAULT_PARAMS = {
   entryWindowStart: "09:35", entryWindowEnd: "14:00",
   minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
   maxContracts: 2, maxOutlay: 400,
-  stopPct: 40, targetPct: 150, trailPct: 35,
+  stopPct: 40, targetPct: 25, trailPct: 35,
   vixMin: 16, vixMax: 35, minMovePct: 0.4,
   dailyLossLimit: 0,
 };
@@ -52,7 +52,7 @@ export const BOUNDS = {
   maxContracts:{ type: "int", min: 1, max: 5 },
   maxOutlay:   { type: "int", min: 100, max: 1500 },
   stopPct:     { type: "int", min: 20, max: 60 },
-  targetPct:   { type: "int", min: 80, max: 300 },
+  targetPct:   { type: "int", min: 10, max: 100 },
   trailPct:    { type: "int", min: 20, max: 50 },
   vixMin:      { type: "int", min: 10, max: 25 },
   vixMax:      { type: "int", min: 25, max: 50 },
@@ -185,9 +185,12 @@ export function evaluate(recs, params) {
   const endMin = hhmm(params.entryWindowEnd);
   const exit = {
     stop: -(Number(params.stopPct ?? 40) / 100),
-    target: Number(params.targetPct ?? 150) / 100,
+    target: Number(params.targetPct ?? 25) / 100,
     trail: Number(params.trailPct ?? 35) / 100,
-    arm: 0.8, // trail arms once up >= 80% (matches the SYSTEM_PROMPT)
+    arm: 0.8, // trail arms once up >= 80%. With the live fixed take-profit (targetPct ~25 < arm)
+              // the position exits at +target before the trail can ever arm, so simulateExit models
+              // the live "resting take-profit at entry + hard stop" exit. The trail code stays for
+              // back-compat if targetPct is ever raised >=80 again.
   };
   let entries = 0, sumRet = 0, wins = 0;
   for (let i = 0; i < recs.length; i++) {

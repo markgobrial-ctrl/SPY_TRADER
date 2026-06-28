@@ -245,3 +245,85 @@ export async function getAccountData() {
 
   return { buying_power, portfolio_value, positions };
 }
+
+// ── WRITE helpers (orders) — used ONLY by the armed stop-watcher (watch.mjs) ────
+// These place/cancel REAL orders. They run only when watch.mjs is ARMED
+// (WATCHER_ARMED=1, DRY_RUN off). The order payload follows Robinhood's options
+// order API; VALIDATE it with ONE supervised live close before trusting it
+// autonomously (see the "Arming the watcher" steps in README).
+const ACCT = () => process.env.ROBINHOOD_ACCOUNT || "545721409";
+
+export async function rhPost(url, body, _retry = true) {
+  const token = await getToken();
+  const fullUrl = url.startsWith("http") ? url : `${RH_BASE}${url}`;
+  const resp = await fetchWithTimeout(fullUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "User-Agent": UA, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 401 && _retry) { invalidateToken(); return rhPost(url, body, false); }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(`Robinhood POST ${resp.status} on ${fullUrl}: ${JSON.stringify(data).slice(0, 300)}`);
+  return data;
+}
+
+// Open SPY 0DTE LONG positions for the agentic account, enriched with the option
+// instrument id + live bid/ask/mark and pnl_pct. `todayET` is "YYYY-MM-DD" in ET.
+export async function getOpenSpyOdtePositions(todayET) {
+  const raw = await rhGetAll(`/options/positions/?nonzero=true&account_numbers=${ACCT()}`);
+  const out = [];
+  for (const pos of raw) {
+    try {
+      const instrumentUrl = pos.option;
+      const optionId = instrumentUrl.replace(/\/$/, "").split("/").pop();
+      const [instrument, quote] = await Promise.all([
+        rhGet(instrumentUrl),
+        rhGet(`/marketdata/options/${optionId}/`),
+      ]);
+      if (instrument.chain_symbol !== "SPY") continue;       // SPY only
+      if (instrument.expiration_date !== todayET) continue;  // 0DTE only
+      const qty = parseFloat(pos.quantity || 0);
+      if (!(qty > 0)) continue;                              // open long only
+      const multiplier = parseFloat(pos.trade_value_multiplier || 100) || 100;
+      const avg_cost = parseFloat(pos.average_price || 0) / multiplier;
+      const mark = parseFloat(quote.adjusted_mark_price || quote.mark_price || 0);
+      const bid = parseFloat(quote.bid_price || 0);
+      const ask = parseFloat(quote.ask_price || 0);
+      const pnl_pct = avg_cost > 0 ? ((mark - avg_cost) / avg_cost) * 100 : 0;
+      out.push({ option_id: optionId, instrumentUrl, type: instrument.type, strike: parseFloat(instrument.strike_price), expiry: instrument.expiration_date, qty, avg_cost, mark, bid, ask, pnl_pct });
+    } catch { /* skip positions we can't enrich */ }
+  }
+  return out;
+}
+
+// Open (cancellable) SELL orders for an option_id — i.e. the resting take-profit.
+export async function findRestingSellOrders(optionId) {
+  const orders = await rhGetAll(`/options/orders/?account_numbers=${ACCT()}`);
+  return (orders || []).filter((o) =>
+    ["queued", "confirmed", "unconfirmed", "partially_filled", "new"].includes(o.state) &&
+    (o.legs || []).some((l) => (l.option || "").includes(optionId) && l.side === "sell")
+  );
+}
+
+export async function cancelOptionOrder(order) {
+  if (!order.cancel) throw new Error(`order ${order.id} not cancellable (state=${order.state})`);
+  return rhPost(order.cancel, {});
+}
+
+// Sell-to-close a long option as a marketable limit (priced at/under the bid to fill fast).
+export async function sellToCloseLimit({ optionId, instrumentUrl, qty, limitPrice, refId }) {
+  const body = {
+    account: `${RH_BASE}/accounts/${ACCT()}/`,
+    direction: "credit",
+    legs: [{ position_effect: "close", side: "sell", option: instrumentUrl || `${RH_BASE}/options/instruments/${optionId}/`, ratio_quantity: 1 }],
+    price: String(limitPrice),
+    type: "limit",
+    time_in_force: "gfd",
+    trigger: "immediate",
+    quantity: String(qty),
+    ref_id: refId,
+    override_day_trade_checks: true, // a protective CLOSE must never be blocked
+    override_dtbp_checks: true,
+  };
+  return rhPost(`/options/orders/`, body);
+}

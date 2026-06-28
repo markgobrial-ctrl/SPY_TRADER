@@ -59,11 +59,16 @@ CRON_CMD="* * * * * cd /root/spy-trader && /usr/bin/node --env-file=.env vps-age
 WARMUP_CMD="0,10,20,30,34 13 * * 1-5 cd /root/spy-trader && /usr/bin/node --env-file=.env warmup.mjs >> /root/spy-warmup.log 2>&1"
 # Weekly performance review — Sunday 10:00 AM ET (14:00 UTC during EDT).
 REVIEW_CMD="0 14 * * 0 cd /root/spy-trader && /usr/bin/node --env-file=.env review.mjs >> /root/spy-trader/review.log 2>&1"
+# Fast stop-watcher — every minute during RTH (UTC 13–20 ≈ 9am–4:59pm ET, Mon–Fri).
+# Self-guards market hours; runs a ~55s internal loop so the effective cadence is ~30s.
+# Off unless WATCHER=1 in .env; only places orders when WATCHER_ARMED=1 (else dry-run).
+WATCH_CMD="* 13-20 * * 1-5 cd /root/spy-trader && /usr/bin/node --env-file=.env watch.mjs >> /root/spy-watch.log 2>&1"
 # Remove old entries if they exist, then add fresh
-( crontab -l 2>/dev/null | grep -v "vps-agent" | grep -v "warmup" | grep -v "review.mjs" ; echo "$CRON_CMD" ; echo "$WARMUP_CMD" ; echo "$REVIEW_CMD" ) | crontab -
+( crontab -l 2>/dev/null | grep -v "vps-agent" | grep -v "warmup" | grep -v "review.mjs" | grep -v "watch.mjs" ; echo "$CRON_CMD" ; echo "$WARMUP_CMD" ; echo "$REVIEW_CMD" ; echo "$WATCH_CMD" ) | crontab -
 echo "  ✓ Agent cron set (runs every minute)"
 echo "  ✓ Warmup cron set (9:00/9:10/9:20/9:30/9:34 AM ET, Mon–Fri)"
 echo "  ✓ Weekly review cron set (Sun 10:00 AM ET)"
+echo "  ✓ Stop-watcher cron set (every minute during RTH; off until WATCHER=1)"
 
 # ── 6. Configure MCP servers ──────────────────────────────────────────────────
 echo ""

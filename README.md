@@ -87,13 +87,47 @@ hours) and warms auth at 9:00/9:10/9:20 AM ET.
 
 ## Strategy (baked into the agent)
 
-- Trade window: 9:35–11:00 AM ET only (manage-only after; close all by 3:45 PM ET)
+- Trade window: 9:35 AM–2:00 PM ET (`entryWindowEnd`, manage-only after; close all by 3:45 PM ET)
 - Instruments: SPY 0DTE calls and puts only — directional, no spreads
 - VIX filter: 16–35
 - Momentum filter: SPY > 0.4% from open
-- Size: 1 contract standard, 2 on highest conviction; max $400/trade
-- Stop loss: 40% of premium · Target: 150%+, let winners run
+- Size: risk-based, clamped to `maxContracts` (default 2); max $400/trade
+- Stop loss: 40% of premium · Take-profit: a resting limit at **+25%** (`targetPct`), placed at entry — these 0DTE pops mean-revert, so bank the spike rather than holding for a moonshot (see `LOG_REVIEW_2026-06-28.md`)
 - One trade/day unless the first closes profitably
+
+## Fast stop-watcher (hard-stop backstop)
+
+The agent places a resting take-profit limit at entry (captures the upside spike between scans).
+`watch.mjs` is the matching downside: a lightweight, **code-only** loop (no LLM) that checks open
+SPY 0DTE positions every ~30s and flattens one whose premium has fallen past the hard stop — the
+thing a slow scan loop misses (see `LOG_REVIEW_2026-06-28.md` for why a monitored-only stop blew
+through to −60%+).
+
+It is **off by default**, behind two gates:
+
+- `WATCHER=1` — enable it at all (otherwise it exits immediately).
+- `WATCHER_ARMED=1` — place real orders. Unset/`0` = **dry-run**: it logs exactly what it *would*
+  do (`[DRY-RUN] … would cancel resting take-profit and sell-to-close …`) without touching the account.
+
+Other safety properties: SPY 0DTE only; agentic account only; respects the dashboard e-stop (if the
+agent is disabled it stands down, so it never fights manual control); cancels the resting take-profit
+before closing so there is never more than one live sell on a contract; and because this is a cash,
+level-2 account, a stray extra sell would be a forbidden naked short and is rejected by the broker
+rather than leaving you short. It uses the **direct Robinhood REST API** (`rhApi.js`), so the VPS
+`.env` needs `ROBINHOOD_TOKEN` / `ROBINHOOD_REFRESH_TOKEN` (generate with `node get-rh-token.mjs`).
+
+### Arming it (in order — do not skip the dry-run)
+
+1. Deploy: `bash update-vps.sh`. On an existing VPS, add the cron once:
+   ```
+   ( crontab -l; echo '* 13-20 * * 1-5 cd /root/spy-trader && /usr/bin/node --env-file=.env watch.mjs >> /root/spy-watch.log 2>&1' ) | crontab -
+   ```
+2. Set `WATCHER=1` and **leave `WATCHER_ARMED` unset** (dry-run). Watch `/root/spy-watch.log` for a
+   session that has a live position — confirm it sees the position and prints sane "would
+   cancel/close" lines at the right stop level.
+3. Once the dry-run looks correct, validate the live order path **once** under supervision: set
+   `WATCHER_ARMED=1`, watch the first real stop-out (or hand-test a single-contract close), and
+   confirm the cancel-then-close fills cleanly. Only then leave it armed.
 
 ## Local development
 
