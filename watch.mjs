@@ -1,154 +1,147 @@
 /**
- * watch.mjs — fast, code-only stop watcher for open SPY 0DTE positions.
+ * watch.mjs — fast, code-only exit engine for open SPY 0DTE positions.
  *
- * WHY: the LLM scan loop runs at most every few minutes and a 0DTE option can
- * blow through its stop in seconds. The resting take-profit limit (placed at
- * entry by the agent) already handles the UPSIDE between scans; this watcher is
- * the matching DOWNSIDE backstop — it checks open positions every ~30s and
- * flattens one whose premium has fallen past the hard stop.
+ * Runs on a ~30s loop (cron spawns this every minute; it loops for ~RUN_SECONDS).
+ * Two jobs, both evaluated on EVERY 30s check:
+ *   1. HARD STOP — flatten a position whose premium falls past -stopPct.
+ *   2. MOMENTUM-STALL (primary profit-taking) — flatten when SPY stops making new
+ *      favorable extremes (new highs for calls / new lows for puts) for STALL_MIN
+ *      minutes. Rides a trend and exits near the peak; beat fixed +25% and trailing
+ *      in backtest (+$633 vs +$191/+$185 on 28 trades). The resting +targetPct%
+ *      limit the agent places at entry is only a HIGH backstop for a fast spike.
  *
- * SCHEDULING: cron fires this every minute (`* * * * *`). Each run loops for
- * ~WATCH_RUN_SECONDS, checking every WATCH_INTERVAL_SEC, so the effective cadence
- * is ~30s without needing sub-minute cron.
+ * The stall timer is PERSISTED to a state file so it survives the per-minute cron
+ * restarts — an in-memory timer would reset every ~55s and never reach STALL_MIN.
+ * SPY is sampled each 30s check; the timer is wall-clock since the last new extreme.
  *
- * SAFETY (read before arming):
- *   - DISABLED unless WATCHER=1.
- *   - DRY-RUN unless WATCHER_ARMED=1 — in dry-run it only LOGS what it would do.
- *   - SPY 0DTE only, agentic account only (rhApi enforces both).
- *   - Respects the dashboard e-stop: if the agent is disabled, it stands down
- *     (you've taken manual control) and only logs.
- *   - Cancels the resting take-profit BEFORE closing, so there is never more than
- *     one live sell on a contract. Backstop: this is a cash, level-2 account, so a
- *     stray extra sell would be a naked short (sell-to-open) which level 2 forbids
- *     — the broker rejects it rather than leaving you short.
- *   - `handled` guard prevents re-issuing a close for the same position within a run.
+ * SAFETY: DISABLED unless WATCHER=1. DRY-RUN unless WATCHER_ARMED=1 (logs only).
+ * SPY 0DTE + agentic account only. Respects the dashboard e-stop. Cancels the
+ * resting backstop before any market close (never two live sells; a cash, level-2
+ * account also rejects a stray short). Stall logic disable via WATCH_STALL=0.
  */
 
 import { randomUUID } from "crypto";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import {
-  getOpenSpyOdtePositions,
-  findRestingSellOrders,
-  cancelOptionOrder,
-  sellToCloseLimit,
+  getOpenSpyOdtePositions, getSpyPrice,
+  findRestingSellOrders, cancelOptionOrder, sellToCloseLimit,
 } from "./rhApi.js";
 import { loadParams } from "./shadow.mjs";
 
 const ENABLED = process.env.WATCHER === "1";
-const ARMED = process.env.WATCHER_ARMED === "1"; // off ⇒ dry-run (no orders placed)
+const ARMED = process.env.WATCHER_ARMED === "1";        // off ⇒ dry-run
+const STALL_ON = process.env.WATCH_STALL !== "0";       // momentum-stall exit (default ON)
+const STALL_MIN = Number(process.env.WATCH_STALL_MIN || 3);
 const INTERVAL_SEC = Number(process.env.WATCH_INTERVAL_SEC || 30);
 const RUN_SECONDS = Number(process.env.WATCH_RUN_SECONDS || 55);
-const STOP_BUFFER = Number(process.env.WATCH_STOP_BUFFER || 0); // extra pts past stopPct before firing
+const STOP_BUFFER = Number(process.env.WATCH_STOP_BUFFER || 0);
 const RENDER_URL = process.env.RENDER_URL;
 const PUSH_SECRET = process.env.PUSH_SECRET;
+const STALL_STATE = process.env.WATCH_STALL_STATE || "/tmp/spy-watch-stall.json";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const round2 = (n) => Math.round(n * 100) / 100;
 const stamp = () => new Date().toISOString();
 const log = (...a) => console.log(`[watch ${stamp()}]`, ...a);
 
-function etDate() {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // YYYY-MM-DD
-}
+function etDate() { return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); }
 function isMarketHours() {
   const et = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
   const day = et.getDay();
   if (day === 0 || day === 6) return false;
   const mins = et.getHours() * 60 + et.getMinutes();
-  return mins >= 9 * 60 + 35 && mins < 16 * 60; // 9:35–16:00 ET
+  return mins >= 9 * 60 + 35 && mins < 16 * 60;
 }
+function loadStall() { try { return existsSync(STALL_STATE) ? JSON.parse(readFileSync(STALL_STATE, "utf8")) : {}; } catch { return {}; } }
+function saveStall(s) { try { writeFileSync(STALL_STATE, JSON.stringify(s)); } catch { /* best-effort */ } }
 
-// Dashboard log (best-effort; the watcher must never throw because a push failed).
 async function pushLog(content, type = "info") {
   if (!RENDER_URL) return;
   try {
     await fetch(`${RENDER_URL}/api/push`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-push-secret": PUSH_SECRET || "" },
+      method: "POST", headers: { "Content-Type": "application/json", "x-push-secret": PUSH_SECRET || "" },
       body: JSON.stringify({ type, content }),
     });
   } catch { /* best-effort */ }
 }
-
-// Server e-stop: only act when the agent is enabled. Fail safe = do NOT act.
 async function agentEnabled() {
   if (!RENDER_URL) return false;
-  try {
-    const r = await fetch(`${RENDER_URL}/api/pending`, { headers: { "x-push-secret": PUSH_SECRET || "" } });
-    const j = await r.json();
-    return !!j.enabled;
-  } catch {
-    return false;
-  }
+  try { const r = await fetch(`${RENDER_URL}/api/pending`, { headers: { "x-push-secret": PUSH_SECRET || "" } }); return !!(await r.json()).enabled; }
+  catch { return false; }
 }
 
-const handled = new Set(); // option_ids already acted on THIS process run
+const handled = new Set(); // option_ids acted on THIS process run
+
+// Cancel the resting backstop limit, then market-close. `reason` e.g. "STOP -31%" / "STALL 3.0min".
+async function flatten(p, reason, stall) {
+  const desc = `${p.type} ${p.strike} exp ${p.expiry}`;
+  const msg = `${reason} — ${desc} (mark ${p.mark}, avg ${p.avg_cost}, ${p.pnl_pct.toFixed(0)}%)`;
+  if (!(await agentEnabled())) { log(`${msg} — agent disabled; standing down.`); handled.add(p.option_id); return; }
+  if (!ARMED) {
+    const px = round2(Math.max(0.01, (p.bid || p.mark) - 0.02));
+    log(`[DRY-RUN] ${msg} → would cancel backstop + sell ${p.qty} @ ${px}`);
+    await pushLog(`[DRY-RUN] ${reason} ${desc} (${p.pnl_pct.toFixed(0)}%)`, "info");
+    handled.add(p.option_id); return;
+  }
+  handled.add(p.option_id); // claim before any await so the next loop iteration can't double-fire
+  try {
+    const resting = await findRestingSellOrders(p.option_id);
+    for (const o of resting) { log(`cancel resting sell ${o.id} (${o.state})`); await cancelOptionOrder(o); }
+    if (resting.length) await sleep(1500); // let the cancel settle so the contract frees up
+    const limit = round2(Math.max(0.01, (p.bid || p.mark) - 0.02));
+    const res = await sellToCloseLimit({ optionId: p.option_id, instrumentUrl: p.instrumentUrl, qty: p.qty, limitPrice: limit, refId: randomUUID() });
+    log(`CLOSE (${reason}) ${p.qty}x ${desc} @ ${limit} (order ${res.id || "?"})`);
+    await pushLog(`${reason.startsWith("STALL") ? "📉 stall-exit" : "🛑 stop"} ${desc} ${p.pnl_pct.toFixed(0)}% — sold ${p.qty} @ ${limit}`, "warn");
+    if (stall) delete stall[p.option_id];
+  } catch (e) {
+    log(`close FAILED ${desc}: ${e.message}`);
+    await pushLog(`⚠ close failed ${desc}: ${e.message}`, "error");
+    handled.delete(p.option_id); // allow a retry next cron run
+  }
+}
 
 async function checkOnce() {
   if (!isMarketHours()) return;
   const params = loadParams();
-  const stopPct = Number(params.stopPct || 40);
-  const trigger = -(stopPct + STOP_BUFFER); // pnl_pct at/below this ⇒ flatten
+  const stopPct = Number(params.stopPct || 28);
+  const stopTrigger = -(stopPct + STOP_BUFFER);
 
   let positions;
-  try {
-    positions = await getOpenSpyOdtePositions(etDate());
-  } catch (e) {
-    log("position read failed:", e.message);
-    return;
-  }
+  try { positions = await getOpenSpyOdtePositions(etDate()); }
+  catch (e) { log("position read failed:", e.message); return; }
+
+  let spy = null;
+  if (STALL_ON && positions.length) { try { spy = await getSpyPrice(); } catch (e) { log("spy quote failed:", e.message); } }
+  const stall = loadStall();
+  const now = Date.now();
+  const openIds = new Set(positions.map((p) => p.option_id));
 
   for (const p of positions) {
     if (handled.has(p.option_id)) continue;
-    if (!(p.pnl_pct <= trigger)) continue; // not breached
 
-    const desc = `${p.type} ${p.strike} exp ${p.expiry}`;
-    const msg = `STOP BREACH ${desc}: mark ${p.mark} vs avg ${p.avg_cost} = ${p.pnl_pct.toFixed(0)}% (trigger -${stopPct + STOP_BUFFER}%)`;
+    // 1) HARD STOP — most urgent
+    if (p.pnl_pct <= stopTrigger) { await flatten(p, `STOP ${p.pnl_pct.toFixed(0)}%`, stall); continue; }
 
-    const enabled = await agentEnabled();
-    if (!enabled) {
-      log(`${msg} — agent disabled; standing down (manual control).`);
-      handled.add(p.option_id);
-      continue;
-    }
-    if (!ARMED) {
-      const wouldPx = round2(Math.max(0.01, (p.bid || p.mark) - 0.02));
-      log(`[DRY-RUN] ${msg} → would cancel resting take-profit and sell-to-close ${p.qty} @ ${wouldPx}`);
-      await pushLog(`[DRY-RUN] fast stop would close ${desc} at ${p.pnl_pct.toFixed(0)}%`, "info");
-      handled.add(p.option_id);
-      continue;
-    }
-
-    // ARMED: cancel the resting take-profit first, then flatten.
-    handled.add(p.option_id); // claim immediately so the next loop iteration can't double-fire
-    try {
-      const resting = await findRestingSellOrders(p.option_id);
-      for (const o of resting) {
-        log(`cancelling resting sell ${o.id} (${o.state})`);
-        await cancelOptionOrder(o);
-      }
-      if (resting.length) await sleep(1500); // let the cancel settle so the contract frees up
-
-      const limit = round2(Math.max(0.01, (p.bid || p.mark) - 0.02)); // marketable: at/under bid
-      const refId = randomUUID();
-      const res = await sellToCloseLimit({
-        optionId: p.option_id, instrumentUrl: p.instrumentUrl, qty: p.qty, limitPrice: limit, refId,
-      });
-      log(`SELL-TO-CLOSE placed: ${p.qty}x ${desc} @ ${limit} (order ${res.id || "?"})`);
-      await pushLog(`🛑 Fast stop closed ${desc} at ${p.pnl_pct.toFixed(0)}% — sold ${p.qty} @ ${limit}`, "warn");
-    } catch (e) {
-      log(`close FAILED for ${desc}: ${e.message}`);
-      await pushLog(`⚠ Fast-stop close FAILED for ${desc}: ${e.message}`, "error");
-      handled.delete(p.option_id); // allow a retry next cron run
+    // 2) MOMENTUM-STALL — primary profit-taking. Track SPY's favorable extreme; if it
+    //    hasn't advanced for STALL_MIN minutes, momentum has paused → exit near the peak.
+    if (STALL_ON && spy != null) {
+      const call = p.type === "call";
+      const st = stall[p.option_id] || { ext: spy, ts: now };
+      const newExtreme = call ? spy > st.ext : spy < st.ext;
+      if (newExtreme) { st.ext = spy; st.ts = now; }
+      stall[p.option_id] = st;
+      const stalledMin = (now - st.ts) / 60000;
+      if (stalledMin >= STALL_MIN) { await flatten(p, `STALL ${stalledMin.toFixed(1)}min no new ${call ? "high" : "low"}`, stall); continue; }
     }
   }
+
+  for (const id of Object.keys(stall)) if (!openIds.has(id)) delete stall[id]; // prune closed positions
+  saveStall(stall);
 }
 
 async function main() {
-  if (!ENABLED) {
-    log("WATCHER disabled (set WATCHER=1 to enable). Exiting.");
-    return;
-  }
-  log(`watcher start — mode=${ARMED ? "ARMED (live orders)" : "DRY-RUN"}, interval=${INTERVAL_SEC}s, run=${RUN_SECONDS}s`);
+  if (!ENABLED) { log("WATCHER disabled (set WATCHER=1 to enable). Exiting."); return; }
+  log(`watcher start — ${ARMED ? "ARMED (live orders)" : "DRY-RUN"}, stall=${STALL_ON ? STALL_MIN + "min" : "off"}, interval=${INTERVAL_SEC}s, run=${RUN_SECONDS}s`);
   const end = Date.now() + RUN_SECONDS * 1000;
   while (true) {
     await checkOnce().catch((e) => log("check error:", e.message));

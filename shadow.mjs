@@ -36,7 +36,7 @@ export const DEFAULT_PARAMS = {
   entryWindowStart: "09:35", entryWindowEnd: "14:00",
   minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
   maxContracts: 2, maxOutlay: 400,
-  stopPct: 28, targetPct: 25, trailPct: 35,
+  stopPct: 28, targetPct: 75, trailPct: 35, // targetPct = HIGH backstop limit; primary exit is the watcher momentum-stall
   vixMin: 16, vixMax: 35, minMovePct: 0.4,
   dailyLossLimit: 0,
 };
@@ -185,12 +185,12 @@ export function evaluate(recs, params) {
   const endMin = hhmm(params.entryWindowEnd);
   const exit = {
     stop: -(Number(params.stopPct ?? 28) / 100),
-    target: Number(params.targetPct ?? 25) / 100,
+    target: Number(params.targetPct ?? 75) / 100,
     trail: Number(params.trailPct ?? 35) / 100,
-    arm: 0.8, // trail arms once up >= 80%. With the live fixed take-profit (targetPct ~25 < arm)
-              // the position exits at +target before the trail can ever arm, so simulateExit models
-              // the live "resting take-profit at entry + hard stop" exit. The trail code stays for
-              // back-compat if targetPct is ever raised >=80 again.
+    arm: 0.8, // trail never arms (targetPct 75 < 80). NOTE: the LIVE exit is the watcher's
+              // momentum-stall (watch.mjs), which simulateExit does NOT model — it scores a fixed
+              // +targetPct cap, so these estimates OVER-state real exits. Only the (off-by-default)
+              // entry-key auto-tuner consumes them; ignore the absolute avgReturn here.
   };
   let entries = 0, sumRet = 0, wins = 0;
   for (let i = 0; i < recs.length; i++) {

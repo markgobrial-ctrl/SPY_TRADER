@@ -267,6 +267,12 @@ export async function rhPost(url, body, _retry = true) {
   return data;
 }
 
+// Latest SPY last-trade price (one quote) — for the watcher's momentum-stall tracking.
+export async function getSpyPrice() {
+  const q = await rhGet("/quotes/SPY/");
+  return parseFloat(q.last_trade_price ?? q.last_extended_hours_trade_price ?? 0) || null;
+}
+
 // Open SPY 0DTE LONG positions for the agentic account, enriched with the option
 // instrument id + live bid/ask/mark and pnl_pct. `todayET` is "YYYY-MM-DD" in ET.
 export async function getOpenSpyOdtePositions(todayET) {

@@ -98,10 +98,12 @@ hours) and warms auth at 9:00/9:10/9:20 AM ET.
 ## Fast stop-watcher (hard-stop backstop)
 
 The agent places a resting take-profit limit at entry (captures the upside spike between scans).
-`watch.mjs` is the matching downside: a lightweight, **code-only** loop (no LLM) that checks open
-SPY 0DTE positions every ~30s and flattens one whose premium has fallen past the hard stop — the
-thing a slow scan loop misses (see `LOG_REVIEW_2026-06-28.md` for why a monitored-only stop blew
-through to −60%+).
+`watch.mjs` is a lightweight, **code-only** loop (no LLM) that checks open SPY 0DTE positions every
+~30s and exits them two ways: a **hard stop** (premium past −stopPct), and a **momentum-stall**
+profit-take — it closes when SPY stops making new highs (calls) / new lows (puts) for `WATCH_STALL_MIN`
+minutes, riding the trend and exiting near the peak (beat fixed +25% and trailing in backtest,
+see `STRATEGY_REVIEW_2026-06-28.md`). The resting limit the agent places at entry is now just a high
+backstop. The stall timer is persisted to a state file so it survives the per-minute cron restarts.
 
 It is **off by default**, behind two gates:
 

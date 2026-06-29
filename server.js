@@ -31,7 +31,7 @@ const TUNABLE_PARAM_KEYS = [
 ];
 const DEFAULT_STRATEGY_PARAMS = {
   entryWindowStart: "09:35", entryWindowEnd: "14:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
-  maxContracts: 2, maxOutlay: 400, stopPct: 28, targetPct: 25, trailPct: 35,
+  maxContracts: 2, maxOutlay: 400, stopPct: 28, targetPct: 75, trailPct: 35,
   vixMin: 16, vixMax: 35, minMovePct: 0.4, dailyLossLimit: 0,
 };
 
