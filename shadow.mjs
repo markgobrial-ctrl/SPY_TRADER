@@ -36,7 +36,7 @@ export const DEFAULT_PARAMS = {
   entryWindowStart: "09:35", entryWindowEnd: "14:00",
   minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
   maxContracts: 2, maxOutlay: 400,
-  stopPct: 40, targetPct: 25, trailPct: 35,
+  stopPct: 28, targetPct: 25, trailPct: 35,
   vixMin: 16, vixMax: 35, minMovePct: 0.4,
   dailyLossLimit: 0,
 };
@@ -184,7 +184,7 @@ export function evaluate(recs, params) {
   const startMin = hhmm(params.entryWindowStart || "09:35");
   const endMin = hhmm(params.entryWindowEnd);
   const exit = {
-    stop: -(Number(params.stopPct ?? 40) / 100),
+    stop: -(Number(params.stopPct ?? 28) / 100),
     target: Number(params.targetPct ?? 25) / 100,
     trail: Number(params.trailPct ?? 35) / 100,
     arm: 0.8, // trail arms once up >= 80%. With the live fixed take-profit (targetPct ~25 < arm)
