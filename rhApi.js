@@ -307,13 +307,16 @@ export async function findRestingSellOrders(optionId) {
   const orders = await rhGetAll(`/options/orders/?account_numbers=${ACCT()}`);
   return (orders || []).filter((o) =>
     ["queued", "confirmed", "unconfirmed", "partially_filled", "new"].includes(o.state) &&
-    (o.legs || []).some((l) => (l.option || "").includes(optionId) && l.side === "sell")
+    // order legs expose `option_id` (a UUID); some shapes use `option` (a URL). Match either.
+    (o.legs || []).some((l) => l.side === "sell" && (l.option_id === optionId || (l.option || "").includes(optionId)))
   );
 }
 
 export async function cancelOptionOrder(order) {
-  if (!order.cancel) throw new Error(`order ${order.id} not cancellable (state=${order.state})`);
-  return rhPost(order.cancel, {});
+  // Robinhood's `cancel` field can be null/absent even on a confirmed, cancellable order —
+  // construct the standard cancel endpoint from the id so we can always cancel it.
+  const url = order.cancel || `${RH_BASE}/options/orders/${order.id}/cancel/`;
+  return rhPost(url, {});
 }
 
 // Sell-to-close a long option as a marketable limit (priced at/under the bid to fill fast).

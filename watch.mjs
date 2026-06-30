@@ -85,11 +85,19 @@ async function flatten(p, reason, stall) {
   }
   handled.add(p.option_id); // claim before any await so the next loop iteration can't double-fire
   try {
-    const resting = await findRestingSellOrders(p.option_id);
-    for (const o of resting) { log(`cancel resting sell ${o.id} (${o.state})`); await cancelOptionOrder(o); }
-    if (resting.length) await sleep(1500); // let the cancel settle so the contract frees up
+    // Cancel any resting sell (the +75% backstop) FIRST — one contract backs only one sell, so the
+    // close is rejected until the backstop is gone. Then POLL until it actually clears (cancel is async).
+    let resting = await findRestingSellOrders(p.option_id);
+    for (const o of resting) { log(`cancel resting sell ${o.id} (${o.state})`); try { await cancelOptionOrder(o); } catch (e) { log(`cancel ${o.id} failed: ${e.message}`); } }
+    for (let i = 0; resting.length && i < 12; i++) { await sleep(500); resting = await findRestingSellOrders(p.option_id); }
+    if (resting.length) log(`WARN ${resting.length} resting sell(s) still open after cancel — selling anyway`);
     const limit = round2(Math.max(0.01, (p.bid || p.mark) - 0.02));
-    const res = await sellToCloseLimit({ optionId: p.option_id, instrumentUrl: p.instrumentUrl, qty: p.qty, limitPrice: limit, refId: randomUUID() });
+    let res = null, lastErr = null;
+    for (let attempt = 1; attempt <= 3 && !res; attempt++) {
+      try { res = await sellToCloseLimit({ optionId: p.option_id, instrumentUrl: p.instrumentUrl, qty: p.qty, limitPrice: limit, refId: randomUUID() }); }
+      catch (e) { lastErr = e; log(`sell attempt ${attempt} failed: ${e.message}`); if (attempt < 3) await sleep(900); }
+    }
+    if (!res) throw lastErr || new Error("sell failed after retries");
     log(`CLOSE (${reason}) ${p.qty}x ${desc} @ ${limit} (order ${res.id || "?"})`);
     await pushLog(`${reason.startsWith("STALL") ? "📉 stall-exit" : "🛑 stop"} ${desc} ${p.pnl_pct.toFixed(0)}% — sold ${p.qty} @ ${limit}`, "warn");
     if (stall) delete stall[p.option_id];
