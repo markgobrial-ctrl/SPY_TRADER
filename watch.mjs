@@ -31,7 +31,8 @@ import { loadParams } from "./shadow.mjs";
 const ENABLED = process.env.WATCHER === "1";
 const ARMED = process.env.WATCHER_ARMED === "1";        // off ⇒ dry-run
 const STALL_ON = process.env.WATCH_STALL !== "0";       // momentum-stall exit (default ON)
-const STALL_MIN = Number(process.env.WATCH_STALL_MIN || 3);
+const STALL_MIN = Number(process.env.WATCH_STALL_MIN || 4);
+const STALL_ARM_PCT = Number(process.env.WATCH_STALL_ARM || 12); // only stall-EXIT once up >= this %
 const INTERVAL_SEC = Number(process.env.WATCH_INTERVAL_SEC || 30);
 const RUN_SECONDS = Number(process.env.WATCH_RUN_SECONDS || 55);
 const STOP_BUFFER = Number(process.env.WATCH_STOP_BUFFER || 0);
@@ -130,8 +131,10 @@ async function checkOnce() {
     // 1) HARD STOP — most urgent
     if (p.pnl_pct <= stopTrigger) { await flatten(p, `STOP ${p.pnl_pct.toFixed(0)}%`, stall); continue; }
 
-    // 2) MOMENTUM-STALL — primary profit-taking. Track SPY's favorable extreme; if it
-    //    hasn't advanced for STALL_MIN minutes, momentum has paused → exit near the peak.
+    // 2) MOMENTUM-STALL — LOCK A GAIN. Track SPY's favorable extreme continuously; if it hasn't
+    //    advanced for STALL_MIN minutes AND the position is already up >= STALL_ARM_PCT, momentum has
+    //    paused on a winner → lock it near the peak. A flat/losing fresh trade is NOT stalled out (it's
+    //    left to the hard stop), so we don't bail 3-4 min after entry at a small loss (the 6/30 churn).
     if (STALL_ON && spy != null) {
       const call = p.type === "call";
       const st = stall[p.option_id] || { ext: spy, ts: now };
@@ -139,7 +142,9 @@ async function checkOnce() {
       if (newExtreme) { st.ext = spy; st.ts = now; }
       stall[p.option_id] = st;
       const stalledMin = (now - st.ts) / 60000;
-      if (stalledMin >= STALL_MIN) { await flatten(p, `STALL ${stalledMin.toFixed(1)}min no new ${call ? "high" : "low"}`, stall); continue; }
+      if (stalledMin >= STALL_MIN && p.pnl_pct >= STALL_ARM_PCT) {
+        await flatten(p, `STALL ${stalledMin.toFixed(1)}min no new ${call ? "high" : "low"} @ +${p.pnl_pct.toFixed(0)}%`, stall); continue;
+      }
     }
   }
 
@@ -149,7 +154,7 @@ async function checkOnce() {
 
 async function main() {
   if (!ENABLED) { log("WATCHER disabled (set WATCHER=1 to enable). Exiting."); return; }
-  log(`watcher start — ${ARMED ? "ARMED (live orders)" : "DRY-RUN"}, stall=${STALL_ON ? STALL_MIN + "min" : "off"}, interval=${INTERVAL_SEC}s, run=${RUN_SECONDS}s`);
+  log(`watcher start — ${ARMED ? "ARMED (live orders)" : "DRY-RUN"}, stall=${STALL_ON ? STALL_MIN + "min@+" + STALL_ARM_PCT + "%" : "off"}, interval=${INTERVAL_SEC}s, run=${RUN_SECONDS}s`);
   const end = Date.now() + RUN_SECONDS * 1000;
   while (true) {
     await checkOnce().catch((e) => log("check error:", e.message));
