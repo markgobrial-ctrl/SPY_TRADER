@@ -522,12 +522,12 @@ async function runScanFast() {
   const spyPositions = snap.positions.filter(p => p.isSpy0dte && Number(p.qty) !== 0);
   const hasPos = spyPositions.length > 0;
   const inWindow = withinEntryWindow();
-  // Wake the LLM if there's a position to manage, or a plausible entry setup in the
-  // window. Over-inclusive by design: the LLM still makes every real decision; we
-  // only skip cycles the strategy itself guarantees are no-ops (flat & nothing firing,
-  // or flat & past the entry window).
+  // Wake the LLM ONLY to ENTER: flat, in the entry window, with signals firing. The code
+  // watcher (watch.mjs) owns ALL exits/management (stall + hard stop + 3:45 close), so we no
+  // longer spend a 16-turn LLM scan every cycle just to "manage" an open position — that was
+  // the bulk of the Claude burn. When a position is open we skip the LLM entirely.
   const wakeThreshold = Math.max(1, (PARAMS.minSignals || 2) - 1);
-  const actionable = hasPos || (inWindow && sig.signalCount >= wakeThreshold);
+  const actionable = !hasPos && inWindow && sig.signalCount >= wakeThreshold;
 
   // Refresh the dashboard book from the cheap, accurate snapshot every cycle.
   await push({ account: {
@@ -539,8 +539,8 @@ async function runScanFast() {
   await push({ type: "scan_start" });
 
   if (!actionable) {
-    const reason = !inWindow
-      ? (hasPos ? "manage-only" : "flat, outside entry window")
+    const reason = hasPos ? "position open — watcher manages exits"
+      : !inWindow ? "flat, outside entry window"
       : `only ${sig.signalCount}/${PARAMS.minSignals} signals firing`;
     journalCodeScan(snap, sig, "WAIT", reason);
     await push({ type: "info", content: fastStatusLine(snap, sig, "WAIT", reason), scanningNow: false });
@@ -552,7 +552,7 @@ async function runScanFast() {
 
   // Actionable → wake the LLM with the snapshot and a smaller turn budget (no
   // 20-turn recon needed). Same lock + wall-clock timeout as a normal scan.
-  console.log(`[${getETTime()}] FAST wake LLM — ${hasPos ? "manage" : "entry"} (signals ${sig.signalCount})`);
+  console.log(`[${getETTime()}] FAST wake LLM — entry (signals ${sig.signalCount})`);
   await runScan(buildFastInstruction(snap, sig), { maxTurns: 16 });
 }
 

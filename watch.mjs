@@ -53,6 +53,10 @@ function isMarketHours() {
   const mins = et.getHours() * 60 + et.getMinutes();
   return mins >= 9 * 60 + 35 && mins < 16 * 60;
 }
+function etMinutesNow() {
+  const et = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  return et.getHours() * 60 + et.getMinutes();
+}
 function loadStall() { try { return existsSync(STALL_STATE) ? JSON.parse(readFileSync(STALL_STATE, "utf8")) : {}; } catch { return {}; } }
 function saveStall(s) { try { writeFileSync(STALL_STATE, JSON.stringify(s)); } catch { /* best-effort */ } }
 
@@ -124,9 +128,13 @@ async function checkOnce() {
   const stall = loadStall();
   const now = Date.now();
   const openIds = new Set(positions.map((p) => p.option_id));
+  const etMin = etMinutesNow();
 
   for (const p of positions) {
     if (handled.has(p.option_id)) continue;
+
+    // 0) EOD — the LLM no longer manages positions, so the watcher force-closes any SPY 0DTE by 3:45 ET.
+    if (etMin >= 15 * 60 + 45) { await flatten(p, "EOD 3:45 close", stall); continue; }
 
     // 1) HARD STOP — most urgent
     if (p.pnl_pct <= stopTrigger) { await flatten(p, `STOP ${p.pnl_pct.toFixed(0)}%`, stall); continue; }
