@@ -35,7 +35,7 @@ function logHistory(meta) { try { appendFileSync(HISTORY_FILE, JSON.stringify({ 
 export const DEFAULT_PARAMS = {
   entryWindowStart: "09:35", entryWindowEnd: "14:00",
   minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
-  maxContracts: 2, maxOutlay: 400,
+  maxContracts: 2, maxOutlay: 400, maxEntriesPerDay: 2,
   stopPct: 28, targetPct: 75, trailPct: 35, // targetPct = HIGH backstop limit; primary exit is the watcher momentum-stall
   vixMin: 16, vixMax: 35, minMovePct: 0.4,
   dailyLossLimit: 0,
@@ -51,6 +51,7 @@ export const BOUNDS = {
   deltaHigh:   { type: "num", min: 0.35, max: 0.75 },
   maxContracts:{ type: "int", min: 1, max: 5 },
   maxOutlay:   { type: "int", min: 100, max: 1500 },
+  maxEntriesPerDay: { type: "int", min: 1, max: 6 },
   stopPct:     { type: "int", min: 20, max: 60 },
   targetPct:   { type: "int", min: 10, max: 100 },
   trailPct:    { type: "int", min: 20, max: 50 },

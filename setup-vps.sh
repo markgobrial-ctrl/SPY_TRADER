@@ -42,6 +42,12 @@ ANTHROPIC_API_KEY=PASTE_YOUR_KEY_HERE
 RENDER_URL=https://spy-trader.onrender.com
 PUSH_SECRET=PASTE_YOUR_PUSH_SECRET_HERE
 ROBINHOOD_ACCOUNT=545721409
+# FAST_PATH=1 gathers market data in code and only wakes Claude for actionable
+# entries — cuts Claude usage ~90%. Needs FMP_API_KEY + RH tokens (get-rh-token.mjs).
+FAST_PATH=1
+FMP_API_KEY=PASTE_YOUR_FMP_KEY_HERE
+ROBINHOOD_TOKEN=RUN_get-rh-token.mjs
+ROBINHOOD_REFRESH_TOKEN=RUN_get-rh-token.mjs
 EOF
 echo "  ✓ .env file created — edit it next"
 else

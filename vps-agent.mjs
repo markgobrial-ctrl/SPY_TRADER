@@ -18,6 +18,7 @@
 
 import { execFileSync } from "child_process";
 import { getSnapshot, computeSignals } from "./market.mjs";
+import { getAccountData, getTodayClosedSpyRoundTrips, getTodaySpyEntryState, cancelOptionOrder } from "./rhApi.js";
 
 // Load the project-dir .env with a tiny zero-dependency parser. The VPS agent has
 // no npm packages installed (only Node built-ins + the `claude` CLI), so we must
@@ -254,7 +255,7 @@ DATA-MISSING DEGRADATION: vwap and or_breakout need intraday bars. Before declar
 (C) TIMING (time-of-day expectancy — from the Jun 28 trade-history analysis):
 - No entries before 9:35 (ignore the 9:30–9:35 noise).
 - HIGHEST-expectancy window is the OPEN, 9:35–10:30 ET — by far the largest favorable moves in the data (avg peak excursion ~+85–103% vs ~+30–40% later). Prefer your full-conviction entries here.
-- WEAKEST window is ~11:00–12:30 ET (smallest moves, most chop). Require stronger confluence (lean ≥3 agreeing signals) or simply PASS — never force a trade in the lull. This is selectivity, not a hard cap.
+- MIDDAY (HARD RULE, enforced in code on the fast path): after 11:00 ET a minimum of 3 AGREEING signals is REQUIRED to enter — the 11:00–12:30 lull has the smallest moves and most chop (the 7/1 midday entry was the day's only loser). With fewer than 3, PASS.
 - Avoid lunch chop (~12:00–13:30 ET) unless a clean trend is clearly intact.
 - Do NOT open a new position in the 15 min before a scheduled econ release unless that release IS the catalyst you intend to trade.
 
@@ -269,17 +270,17 @@ Step 4 — Strike selection (DELTA-anchored, not strike-distance). Pull the 0DTE
 
 Step 5 — Size (RISK-BASED, not fixed count): Your hard stop is ${PARAMS.stopPct}% of premium. Risk budget per trade = the smaller of $160 or 8% of account equity. Contracts = floor(riskBudget ÷ (entryPremium × 100 × ${(PARAMS.stopPct / 100).toFixed(2)})). Then clamp to ${PARAMS.maxContracts} contract(s) max, and NEVER exceed $${PARAMS.maxOutlay} total outlay. If account < $1,500: 1 contract max. If even 1 contract would risk more than the budget or cost > $${PARAMS.maxOutlay}, pick a cheaper qualifying strike or SKIP — never over-risk.
 
-Step 6 — Exits (take the spike: fixed take-profit placed AT ENTRY):
-- EXITS ARE HANDLED IN CODE — do NOT place any resting take-profit/backstop limit at entry. A resting sell reserves the single contract and BLOCKS the code watcher's close (this caused failed sells). The watcher (watch.mjs) owns profit-taking: it locks the gain on a MOMENTUM-STALL once you're in profit (SPY stops making new highs for calls / new lows for puts), and cuts losers at the hard stop. Just enter cleanly and let the watcher exit; never place a resting limit that would block it.
+Step 6 — Exits (HANDLED IN CODE by the watcher — you only enter):
+- EXITS ARE HANDLED IN CODE — do NOT place any resting take-profit/backstop limit at entry, EVER. A resting sell reserves the single contract and BLOCKS the code watcher's close (this caused failed sells). The watcher (watch.mjs) owns ALL profit-taking: it locks the gain on a MOMENTUM-STALL once you're in profit (SPY stops making new highs for calls / new lows for puts), and cuts losers at the hard stop. Just enter cleanly and let the watcher exit; never place a resting limit that would block it.
 - HARD STOP / INVALIDATION (SECONDARY, monitored each scan): if the position is at −${PARAMS.stopPct}% premium OR SPY has lost the level that justified the trade (back through VWAP / back inside the opening range against you), exit immediately. Price action leads premium.
-- NEVER DOUBLE-SELL (CRITICAL — real money): there must never be two live sell orders on one contract. Before placing ANY stop / invalidation / EOD market close, you MUST first CANCEL the resting take-profit limit for that position and confirm the cancel, THEN close. If the take-profit limit already filled, the position is flat — do nothing.
-- LATE-DAY: after 14:30 ET theta and pin risk dominate — if a position is still open and not about to hit its take-profit, cancel the resting limit and close at market rather than waiting.
+- NEVER DOUBLE-SELL (CRITICAL — real money): there must never be two live sell orders on one contract. Before placing ANY stop / invalidation / EOD close, you MUST first check for and CANCEL any live sell order on that contract (there should be none — you never place resting sells — but verify) and confirm the cancel, THEN close. If a sell already filled, the position is flat — do nothing.
+- LATE-DAY: after 14:30 ET theta and pin risk dominate — if a position is still open, cancel any live sell order on it, then close at market rather than waiting.
 
 Step 7 — Stop (HARD): Exit at ${PARAMS.stopPct}% premium loss OR when the underlying invalidates the setup (back through VWAP / opening range against you), whichever comes first. No averaging down, ever.
 
-Step 8 — Manage every scan: for each open SPY 0DTE position, first confirm its resting take-profit limit is still working — if it's missing (and the position is still open), re-place it at the entry-based level. Then re-check the hard stop, the underlying level, and the time of day. Stop or invalidation hit → CANCEL the resting take-profit limit, confirm, then close. Past 3:45 PM → cancel any resting take-profit limit, then close all SPY 0DTE positions (SPY 0DTE only — leave every other holding untouched).
+Step 8 — Manage every scan: for each open SPY 0DTE position, do NOT place or re-place any resting take-profit — the code watcher owns profit-taking. Re-check the hard stop, the underlying level, and the time of day. Stop or invalidation hit → cancel any live sell order on that contract (verify — there should be none), confirm, then close. Past 3:45 PM → cancel any live sell orders, then close all SPY 0DTE positions (SPY 0DTE only — leave every other holding untouched).
 ORDER EXECUTION: use marketable LIMIT orders (price a few cents through the mid), never naked market orders — the 0DTE spread is a tax. Prefer entering on a small pullback toward VWAP over chasing an extended candle.
-RISK GUARDRAILS: STOP trading for the day after 2 consecutive losing trades. After your first profitable close of the day, take at most one more trade and only on A+ confluence — otherwise bank the day. (The server also enforces a hard daily loss limit and will disable you if hit.)
+RISK GUARDRAILS (now ALSO enforced in code — the fast path will not even wake you when a gate is hit): max ${PARAMS.maxEntriesPerDay ?? 2} entries per day. STOP trading for the day after 2 consecutive losing trades. Never open a new position while ANY buy order is still working (unfilled) — one entry order at a time, and at most ONE entry order per scan. After your first profitable close of the day, take at most one more trade and only on A+ confluence — otherwise bank the day.
 
 Step 9 — Report format:
 📊 MARKET: [SPY price, % from open, vs VWAP, opening-range status, VIX (from ^VIX), trend]
@@ -341,9 +342,10 @@ async function runScan(instruction = null, opts = {}) {
     `Autonomous scan. Today is ${getETDate()}, ET time is ${getETTime()}.`,
     `Run full decision framework: check SPY vs open (need >${PARAMS.minMovePct}% move), VIX (need ${PARAMS.vixMin}–${PARAMS.vixMax}), open positions.`,
     `Entry window ${PARAMS.entryWindowStart}–${PARAMS.entryWindowEnd} ET ONLY (manage-only after). ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay.`,
-    `Do NOT place any resting take-profit/backstop limit at entry — the code watcher owns exits (momentum-stall profit-take once in profit + ${PARAMS.stopPct}% hard stop). Just enter cleanly. Close all SPY 0DTE by 3:45 PM ET.`,
+    `Do NOT place any resting take-profit/backstop limit at entry — the code watcher owns exits (momentum-stall profit-take once in profit + ${PARAMS.stopPct}% hard stop). Just enter cleanly. Place at most ONE entry order this scan. Close all SPY 0DTE by 3:45 PM ET.`,
+    opts.noEntryReason ? `⛔ CODE GATE ACTIVE — DO NOT OPEN ANY NEW POSITION THIS SCAN (${opts.noEntryReason}). Manage-only.` : null,
     `Execute autonomously.`,
-  ].join(" ");
+  ].filter(Boolean).join(" ");
 
   await push({ type: "info", content: `▶ Scan started — ${getETTime()}`, scanningNow: true });
   await push({ type: "scan_start" });
@@ -455,6 +457,67 @@ function withinEntryWindow() {
   return mins >= sh * 60 + sm && mins < eh * 60 + em;
 }
 
+function etMinutesNow() {
+  const et = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  return et.getHours() * 60 + et.getMinutes();
+}
+
+// ── Code-enforced entry gates + stale-entry sweep ─────────────────────────────
+// The Jun 28 + Jul 1 reviews showed the frequency rules were prose the LLM
+// ignored (6 round-trips on 6/30; two concurrent positions + a $706 outlay on
+// 7/1). These gates run in CODE before the LLM is ever woken, so they cannot be
+// ignored. The 7/1 double-position root cause — a buy limit that sat 20 min
+// unfilled and was invisible to the position snapshot — is covered two ways:
+// working buy orders block new entries, and the sweep cancels them after
+// ENTRY_ORDER_MAX_AGE_MS (a marketable limit that hasn't filled in ~90s is
+// mispriced; don't leave a GFD buy resting while scans continue).
+const ENTRY_ORDER_MAX_AGE_MS = Number(process.env.ENTRY_ORDER_MAX_AGE_MS) || 90 * 1000;
+const MIDDAY_GATE_MIN = 11 * 60; // after 11:00 ET, require >= 3 agreeing signals (hard)
+
+function todayETISO() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
+// Cancel working SPY buy orders older than the age cap. Returns the buys still
+// live after the sweep (i.e. young ones — an entry legitimately in flight).
+async function sweepStaleEntryOrders(workingBuys) {
+  const still = [];
+  for (const wb of workingBuys) {
+    if (wb.ageMs < ENTRY_ORDER_MAX_AGE_MS) { still.push(wb); continue; }
+    try {
+      await cancelOptionOrder(wb.order);
+      const ageS = Math.round(wb.ageMs / 1000);
+      console.log(`[${getETTime()}] Canceled stale entry order ${wb.order.id} (unfilled ${ageS}s)`);
+      await push({ type: "warn", content: `🧹 Canceled stale entry order (unfilled ${ageS}s, limit ${wb.order.price}) — a marketable limit should fill in seconds` });
+    } catch (e) {
+      console.error(`Stale-entry cancel ${wb.order.id} failed:`, e.message);
+      still.push(wb); // cancel failed → still treat it as working (blocks new entries)
+    }
+  }
+  return still;
+}
+
+// Returns a blocking reason string, or null if a new entry is allowed.
+// FAIL-CLOSED: if the gate data can't be fetched, entries are blocked this tick
+// (capital protection first; the next tick retries).
+async function checkEntryGates() {
+  try {
+    const todayET = todayETISO();
+    const st = await getTodaySpyEntryState(todayET);
+    const working = await sweepStaleEntryOrders(st.workingBuys);
+    if (working.length) return `entry order already working (${working.length})`;
+    const maxEntries = Number(PARAMS.maxEntriesPerDay ?? 2);
+    if (st.entries.length >= maxEntries) return `daily entry cap reached (${st.entries.length}/${maxEntries})`;
+    const closes = await getTodayClosedSpyRoundTrips(todayET); // newest first
+    if (closes.length >= 2 && closes[0].realizedPnl < 0 && closes[1].realizedPnl < 0)
+      return "2 consecutive losses — halted for the day";
+    return null;
+  } catch (e) {
+    console.error("Entry-gate check failed (fail-closed):", e.message);
+    return `gate check failed (${e.message.slice(0, 80)})`;
+  }
+}
+
 function fastStatusLine(snap, sig, decision, reason) {
   const pct = snap.spy.pctFromOpen != null ? `${snap.spy.pctFromOpen >= 0 ? "+" : ""}${snap.spy.pctFromOpen.toFixed(2)}%` : "n/a";
   const sigs = sig.signals.length ? sig.signals.join("+") + (sig.direction ? ` ${sig.direction}` : "") : "none";
@@ -497,7 +560,7 @@ function buildFastInstruction(snap, sig) {
     other.length ? `- OTHER holdings — NEVER touch, never close: ${other.join("; ")}` : ``,
     `- Account: buyingPower ${snap.account?.buyingPower}, portfolioValue ${snap.account?.portfolioValue}`,
     ``,
-    `Apply the full decision framework with these numbers. Entry window ${PARAMS.entryWindowStart}-${PARAMS.entryWindowEnd} ET ONLY (manage-only after). Manage any open SPY 0DTE per the Step 6 exit rules (resting +take-profit placed at entry, hard stop, underlying invalidation, time-of-day); close all SPY 0DTE by 3:45 PM ET. ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay. Execute autonomously. ALWAYS emit the ACCOUNT_JSON and SCAN_JSON footers.`,
+    `Apply the full decision framework with these numbers. Entry window ${PARAMS.entryWindowStart}-${PARAMS.entryWindowEnd} ET ONLY (manage-only after). Do NOT place any resting take-profit — the code watcher owns ALL exits (momentum-stall profit-take + hard stop + 3:45 close); manage any open SPY 0DTE per Step 6 (hard stop, underlying invalidation, time-of-day) only. Place at most ONE entry order this scan, and never while another buy order is still working. ${PARAMS.maxContracts} contract(s) max, $${PARAMS.maxOutlay} max outlay. Execute autonomously. ALWAYS emit the ACCOUNT_JSON and SCAN_JSON footers.`,
   ].filter(Boolean).join("\n");
 }
 
@@ -526,8 +589,22 @@ async function runScanFast() {
   // watcher (watch.mjs) owns ALL exits/management (stall + hard stop + 3:45 close), so we no
   // longer spend a 16-turn LLM scan every cycle just to "manage" an open position — that was
   // the bulk of the Claude burn. When a position is open we skip the LLM entirely.
-  const wakeThreshold = Math.max(1, (PARAMS.minSignals || 2) - 1);
-  const actionable = !hasPos && inWindow && sig.signalCount >= wakeThreshold;
+  // MIDDAY HARD GATE: after 11:00 ET the wake bar rises to 3 agreeing signals — the
+  // 11:00–12:30 lull is the documented dead zone (7/1's only loser entered 12:19 ET).
+  const midday = etMinutesNow() >= MIDDAY_GATE_MIN;
+  const wakeThreshold = midday
+    ? Math.max(Number(PARAMS.minSignals || 2), 3)
+    : Math.max(1, (PARAMS.minSignals || 2) - 1);
+  let actionable = !hasPos && inWindow && sig.signalCount >= wakeThreshold;
+
+  // Entry gates (code-enforced, checked only when we'd otherwise wake the LLM):
+  // working buy order, daily entry cap, 2-consecutive-red halt. Also sweeps stale
+  // unfilled entry limits as a side effect.
+  let gateReason = null;
+  if (actionable) {
+    gateReason = await checkEntryGates();
+    if (gateReason) actionable = false;
+  }
 
   // Refresh the dashboard book from the cheap, accurate snapshot every cycle.
   await push({ account: {
@@ -539,9 +616,11 @@ async function runScanFast() {
   await push({ type: "scan_start" });
 
   if (!actionable) {
-    const reason = hasPos ? "position open — watcher manages exits"
+    const reason = gateReason ? `entry gate: ${gateReason}`
+      : hasPos ? "position open — watcher manages exits"
       : !inWindow ? "flat, outside entry window"
-      : `only ${sig.signalCount}/${PARAMS.minSignals} signals firing`;
+      : midday && sig.signalCount >= (PARAMS.minSignals || 2) ? `midday gate: ${sig.signalCount}/3 signals (post-11:00 ET needs 3)`
+      : `only ${sig.signalCount}/${wakeThreshold} signals firing`;
     journalCodeScan(snap, sig, "WAIT", reason);
     await push({ type: "info", content: fastStatusLine(snap, sig, "WAIT", reason), scanningNow: false });
     console.log(`[${getETTime()}] FAST skip — ${reason}`);
@@ -609,7 +688,40 @@ if (action) {
 // closed SPY round trips reconciled from order history. The closes carry the
 // closing order's id so the server can count each one exactly once — this is how
 // both agent-executed AND manually-closed positions get into win-rate/P&L.
+//
+// COST: this is pure bookkeeping, so it's done with direct Robinhood REST calls
+// (rhApi.js) — NO Claude. The old LLM version spawned a 16-turn Sonnet+MCP
+// session every 15 min (7am–8pm) PLUS after every scan (~90 sessions/day) and was
+// the single largest Claude burn. The LLM path is kept below ONLY as a fallback
+// for when the REST creds are missing/expired, so the dashboard never goes dark.
 async function pushAccountData() {
+  try {
+    const { buying_power, portfolio_value, positions } = await getAccountData();
+    let closes = [];
+    try {
+      const todayET = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      closes = await getTodayClosedSpyRoundTrips(todayET);
+    } catch (e) {
+      console.error("Closes reconcile failed (account snapshot still pushed):", e.message);
+    }
+    await push({
+      account: {
+        accountNumber: ACCOUNT_NUMBER,
+        buyingPower: buying_power,
+        portfolioValue: portfolio_value,
+        positions,
+      },
+      ...(closes.length ? { closes } : {}),
+    });
+    console.log(`[${getETTime()}] Account refresh (REST): pv=${portfolio_value} positions=${positions.length} closes=${closes.length}`);
+  } catch (e) {
+    console.error(`Account refresh via REST failed (${e.message}) — falling back to LLM`);
+    await pushAccountDataLLM();
+  }
+}
+
+// Legacy LLM-based account refresh — FALLBACK ONLY (REST creds missing/expired).
+async function pushAccountDataLLM() {
   try {
     const { ANTHROPIC_API_KEY: _2, ...envForClaude2 } = { ...process.env, HOME: "/root" };
     const output = execFileSync("claude", [
@@ -676,6 +788,14 @@ if (accountWindow && (!state.lastAccountPush || Date.now() - state.lastAccountPu
 if (!enabled) { console.log("Agent disabled"); process.exit(0); }
 if (!isMarketHours()) { console.log("Outside market hours"); process.exit(0); }
 
+// EVERY tick during market hours: cancel stale unfilled entry limits. This runs
+// even between scans, so an unfilled GFD buy can never sit for 20 minutes again
+// (the 7/1 double-position root cause). One cheap REST call per minute.
+try {
+  const { workingBuys } = await getTodaySpyEntryState(todayETISO());
+  if (workingBuys.length) await sweepStaleEntryOrders(workingBuys);
+} catch (e) { console.error("Stale-entry sweep failed:", e.message); }
+
 // Run the scan if it was due (the slot was already claimed above).
 if (!scanDue) {
   const wait = Math.round((intervalMs - sinceLastScan) / 60000);
@@ -683,4 +803,9 @@ if (!scanDue) {
   process.exit(0);
 }
 if (FAST_PATH) await runScanFast();
-else await runScan();
+else {
+  // Legacy full-scan path: the entry gates can't physically stop the LLM here,
+  // so a hit gate becomes a hard manage-only instruction in the prompt.
+  const gate = await checkEntryGates();
+  await runScan(null, gate ? { noEntryReason: gate } : {});
+}

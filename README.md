@@ -92,18 +92,20 @@ hours) and warms auth at 9:00/9:10/9:20 AM ET.
 - VIX filter: 16–35
 - Momentum filter: SPY > 0.4% from open
 - Size: risk-based, clamped to `maxContracts` (default 2); max $400/trade
-- Stop loss: 40% of premium · Take-profit: a resting limit at **+25%** (`targetPct`), placed at entry — these 0DTE pops mean-revert, so bank the spike rather than holding for a moonshot (see `LOG_REVIEW_2026-06-28.md`)
-- One trade/day unless the first closes profitably
+- Exits: owned entirely by the code watcher (`watch.mjs`) — hard stop at `stopPct` (default 28%), momentum-stall profit-take (latched arm), and a give-back guard (an armed winner is never allowed to turn red). The agent places **no resting take-profit at entry** — a resting sell blocks the watcher's close.
+- Entry frequency (enforced in CODE, not prompt): max `maxEntriesPerDay` entries/day (default 2), halt after 2 consecutive losing closes, never enter while a buy order is still working, and unfilled entry limits are auto-canceled after ~90s (`ENTRY_ORDER_MAX_AGE_MS`). After 11:00 ET entries require 3 agreeing signals (the midday-lull gate).
 
-## Fast stop-watcher (hard-stop backstop)
+## Fast stop-watcher (the exit engine)
 
-The agent places a resting take-profit limit at entry (captures the upside spike between scans).
 `watch.mjs` is a lightweight, **code-only** loop (no LLM) that checks open SPY 0DTE positions every
-~30s and exits them two ways: a **hard stop** (premium past −stopPct), and a **momentum-stall**
+~30s and exits them three ways: a **hard stop** (premium past −stopPct); a **momentum-stall**
 profit-take — it closes when SPY stops making new highs (calls) / new lows (puts) for `WATCH_STALL_MIN`
 minutes, riding the trend and exiting near the peak (beat fixed +25% and trailing in backtest,
-see `STRATEGY_REVIEW_2026-06-28.md`). The resting limit the agent places at entry is now just a high
-backstop. The stall timer is persisted to a state file so it survives the per-minute cron restarts.
+see `STRATEGY_REVIEW_2026-06-28.md`) — the arm is **latched** on the position's peak P&L (once it has
+ever been up `WATCH_STALL_ARM`%, it stays armed even if the premium fades); and a **give-back guard** —
+once armed, the position is closed immediately if it gives back more than `WATCH_GIVEBACK` pts
+(default 20) from its peak, floored at breakeven, so an armed winner can never round-trip to red.
+The stall/peak state is persisted to a state file so it survives the per-minute cron restarts.
 
 It is **off by default**, behind two gates:
 

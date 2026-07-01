@@ -26,12 +26,12 @@ const DAILY_LOSS_LIMIT = Number(process.env.DAILY_LOSS_LIMIT) || 0;
 // (clampParams); the server just refuses keys outside this list.
 const TUNABLE_PARAM_KEYS = [
   "entryWindowStart", "entryWindowEnd", "minSignals", "deltaLow", "deltaHigh",
-  "maxContracts", "maxOutlay", "stopPct", "targetPct", "trailPct",
+  "maxContracts", "maxOutlay", "maxEntriesPerDay", "stopPct", "targetPct", "trailPct",
   "vixMin", "vixMax", "minMovePct", "dailyLossLimit",
 ];
 const DEFAULT_STRATEGY_PARAMS = {
   entryWindowStart: "09:35", entryWindowEnd: "14:00", minSignals: 2, deltaLow: 0.45, deltaHigh: 0.55,
-  maxContracts: 2, maxOutlay: 400, stopPct: 28, targetPct: 75, trailPct: 35,
+  maxContracts: 2, maxOutlay: 400, maxEntriesPerDay: 2, stopPct: 28, targetPct: 75, trailPct: 35,
   vixMin: 16, vixMax: 35, minMovePct: 0.4, dailyLossLimit: 0,
 };
 

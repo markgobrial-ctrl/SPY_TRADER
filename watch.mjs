@@ -2,13 +2,16 @@
  * watch.mjs — fast, code-only exit engine for open SPY 0DTE positions.
  *
  * Runs on a ~30s loop (cron spawns this every minute; it loops for ~RUN_SECONDS).
- * Two jobs, both evaluated on EVERY 30s check:
+ * Three jobs, all evaluated on EVERY 30s check:
  *   1. HARD STOP — flatten a position whose premium falls past -stopPct.
  *   2. MOMENTUM-STALL (primary profit-taking) — flatten when SPY stops making new
  *      favorable extremes (new highs for calls / new lows for puts) for STALL_MIN
  *      minutes. Rides a trend and exits near the peak; beat fixed +25% and trailing
- *      in backtest (+$633 vs +$191/+$185 on 28 trades). The resting +targetPct%
- *      limit the agent places at entry is only a HIGH backstop for a fast spike.
+ *      in backtest (+$633 vs +$191/+$185 on 28 trades). The armed flag is LATCHED
+ *      on the position's peak P&L, so a winner that fades still stall-exits.
+ *   3. GIVE-BACK GUARD — once armed (peaked >= STALL_ARM_PCT), flatten immediately
+ *      if the premium gives back more than WATCH_GIVEBACK pts from its peak,
+ *      floored at breakeven: an armed winner is never allowed to turn red.
  *
  * The stall timer is PERSISTED to a state file so it survives the per-minute cron
  * restarts — an in-memory timer would reset every ~55s and never reach STALL_MIN.
@@ -32,7 +35,8 @@ const ENABLED = process.env.WATCHER === "1";
 const ARMED = process.env.WATCHER_ARMED === "1";        // off ⇒ dry-run
 const STALL_ON = process.env.WATCH_STALL !== "0";       // momentum-stall exit (default ON)
 const STALL_MIN = Number(process.env.WATCH_STALL_MIN || 4);
-const STALL_ARM_PCT = Number(process.env.WATCH_STALL_ARM || 12); // only stall-EXIT once up >= this %
+const STALL_ARM_PCT = Number(process.env.WATCH_STALL_ARM || 12); // LATCHED: armed once the position has EVER been up >= this %
+const GIVEBACK_PTS = Number(process.env.WATCH_GIVEBACK ?? 20);   // once armed, exit if P&L falls this many pts below its peak (floored at breakeven); 0 disables
 const INTERVAL_SEC = Number(process.env.WATCH_INTERVAL_SEC || 30);
 const RUN_SECONDS = Number(process.env.WATCH_RUN_SECONDS || 55);
 const STOP_BUFFER = Number(process.env.WATCH_STOP_BUFFER || 0);
@@ -104,7 +108,7 @@ async function flatten(p, reason, stall) {
     }
     if (!res) throw lastErr || new Error("sell failed after retries");
     log(`CLOSE (${reason}) ${p.qty}x ${desc} @ ${limit} (order ${res.id || "?"})`);
-    await pushLog(`${reason.startsWith("STALL") ? "📉 stall-exit" : "🛑 stop"} ${desc} ${p.pnl_pct.toFixed(0)}% — sold ${p.qty} @ ${limit}`, "warn");
+    await pushLog(`${reason.startsWith("STALL") ? "📉 stall-exit" : reason.startsWith("GIVEBACK") ? "📉 give-back exit" : "🛑 stop"} ${desc} ${p.pnl_pct.toFixed(0)}% — sold ${p.qty} @ ${limit}`, "warn");
     if (stall) delete stall[p.option_id];
   } catch (e) {
     log(`close FAILED ${desc}: ${e.message}`);
@@ -139,19 +143,32 @@ async function checkOnce() {
     // 1) HARD STOP — most urgent
     if (p.pnl_pct <= stopTrigger) { await flatten(p, `STOP ${p.pnl_pct.toFixed(0)}%`, stall); continue; }
 
-    // 2) MOMENTUM-STALL — LOCK A GAIN. Track SPY's favorable extreme continuously; if it hasn't
-    //    advanced for STALL_MIN minutes AND the position is already up >= STALL_ARM_PCT, momentum has
-    //    paused on a winner → lock it near the peak. A flat/losing fresh trade is NOT stalled out (it's
-    //    left to the hard stop), so we don't bail 3-4 min after entry at a small loss (the 6/30 churn).
+    // 2) MOMENTUM-STALL + GIVE-BACK — LOCK A GAIN. Track SPY's favorable extreme continuously
+    //    AND the position's peak P&L. The armed flag is LATCHED: once the position has EVER been
+    //    up >= STALL_ARM_PCT it stays armed, even if the premium later fades below the threshold.
+    //    (The old check `p.pnl_pct >= STALL_ARM_PCT` was evaluated at exit time — a winner that
+    //    peaked while SPY was still trending, then faded below +12% before the stall timer fired,
+    //    could NEVER stall-exit and rode all the way to the hard stop: the 7/1 748C, up big →
+    //    sold at −30%.) Two exits once armed:
+    //      GIVEBACK — premium falls more than WATCH_GIVEBACK pts from its peak (floored at
+    //                 breakeven: an armed winner is never allowed to turn red). Fires immediately.
+    //      STALL    — SPY makes no new favorable extreme for STALL_MIN minutes. Fires on the timer.
+    //    A flat/losing fresh trade is NOT stalled out (left to the hard stop), so we don't bail
+    //    3-4 min after entry at a small loss (the 6/30 churn).
     if (STALL_ON && spy != null) {
       const call = p.type === "call";
       const st = stall[p.option_id] || { ext: spy, ts: now };
       const newExtreme = call ? spy > st.ext : spy < st.ext;
       if (newExtreme) { st.ext = spy; st.ts = now; }
+      if (st.peak == null || p.pnl_pct > st.peak) st.peak = p.pnl_pct;   // latch peak P&L
+      if (!st.armed && st.peak >= STALL_ARM_PCT) st.armed = true;        // latch armed
       stall[p.option_id] = st;
       const stalledMin = (now - st.ts) / 60000;
-      if (stalledMin >= STALL_MIN && p.pnl_pct >= STALL_ARM_PCT) {
-        await flatten(p, `STALL ${stalledMin.toFixed(1)}min no new ${call ? "high" : "low"} @ +${p.pnl_pct.toFixed(0)}%`, stall); continue;
+      if (st.armed && GIVEBACK_PTS > 0 && p.pnl_pct <= Math.max(0, st.peak - GIVEBACK_PTS)) {
+        await flatten(p, `GIVEBACK peaked +${st.peak.toFixed(0)}%, now ${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(0)}%`, stall); continue;
+      }
+      if (stalledMin >= STALL_MIN && st.armed) {
+        await flatten(p, `STALL ${stalledMin.toFixed(1)}min no new ${call ? "high" : "low"} @ ${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(0)}% (peak +${st.peak.toFixed(0)}%)`, stall); continue;
       }
     }
   }
@@ -162,7 +179,7 @@ async function checkOnce() {
 
 async function main() {
   if (!ENABLED) { log("WATCHER disabled (set WATCHER=1 to enable). Exiting."); return; }
-  log(`watcher start — ${ARMED ? "ARMED (live orders)" : "DRY-RUN"}, stall=${STALL_ON ? STALL_MIN + "min@+" + STALL_ARM_PCT + "%" : "off"}, interval=${INTERVAL_SEC}s, run=${RUN_SECONDS}s`);
+  log(`watcher start — ${ARMED ? "ARMED (live orders)" : "DRY-RUN"}, stall=${STALL_ON ? STALL_MIN + "min@+" + STALL_ARM_PCT + "% (latched)" : "off"}, giveback=${GIVEBACK_PTS > 0 ? GIVEBACK_PTS + "pts" : "off"}, interval=${INTERVAL_SEC}s, run=${RUN_SECONDS}s`);
   const end = Date.now() + RUN_SECONDS * 1000;
   while (true) {
     await checkOnce().catch((e) => log("check error:", e.message));

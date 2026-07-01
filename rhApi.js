@@ -246,6 +246,132 @@ export async function getAccountData() {
   return { buying_power, portfolio_value, positions };
 }
 
+// ── Today's closed SPY round trips (code-only; replaces the LLM reconciler) ────
+// Walks today's FILLED single-leg option orders, matches each SPY sell-to-close
+// to the same-day buy-to-open on the same instrument (weighted avg fill), and
+// returns [{id, symbol, type, strike, expiry, contracts, realizedPnl}] where id
+// is the closing order's id (the server dedupes on it). `todayET` is "YYYY-MM-DD".
+export async function getTodayClosedSpyRoundTrips(todayET) {
+  const toET = (iso) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
+  // Orders come newest-first; stop paginating once a page's oldest order predates today.
+  const orders = [];
+  let next = `/options/orders/?account_numbers=${ACCT()}`;
+  while (next) {
+    const page = await rhGet(next);
+    const results = page.results || [];
+    orders.push(...results);
+    const oldest = results[results.length - 1];
+    if (!results.length || (oldest && toET(oldest.created_at) < todayET)) break;
+    next = page.next || null;
+  }
+
+  const todays = orders.filter(
+    (o) => o.state === "filled" && (o.legs || []).length === 1 && toET(o.updated_at || o.created_at) === todayET
+  );
+
+  // Weighted-average per-SHARE fill price + filled contracts for a single-leg order.
+  const fillOf = (o) => {
+    const exs = (o.legs[0].executions || []);
+    let qty = 0, cost = 0;
+    for (const e of exs) {
+      const q = parseFloat(e.quantity || 0), p = parseFloat(e.price || 0);
+      qty += q; cost += q * p;
+    }
+    if (qty > 0) return { qty, price: cost / qty };
+    const q = parseFloat(o.processed_quantity || o.quantity || 0);
+    return { qty: q, price: parseFloat(o.price || 0) };
+  };
+  const optionIdOf = (o) => (o.legs[0].option || "").replace(/\/$/, "").split("/").pop();
+
+  const buys = {}; // optionId -> { qty, cost }
+  const sells = [];
+  for (const o of todays) {
+    const leg = o.legs[0];
+    const id = optionIdOf(o);
+    const f = fillOf(o);
+    if (!id || !(f.qty > 0)) continue;
+    if (leg.side === "buy") {
+      const b = buys[id] || { qty: 0, cost: 0 };
+      b.qty += f.qty; b.cost += f.qty * f.price; buys[id] = b;
+    } else if (leg.side === "sell" && leg.position_effect === "close") {
+      sells.push({ order: o, id, f });
+    }
+  }
+
+  const out = [];
+  const instCache = {};
+  for (const s of sells) {
+    let inst;
+    try {
+      inst = instCache[s.id] || (instCache[s.id] = await rhGet(s.order.legs[0].option));
+    } catch { continue; }
+    if (inst.chain_symbol !== "SPY") continue; // SPY only — never report other symbols
+    const b = buys[s.id];
+    if (!b || !(b.qty > 0)) continue; // no same-day open to match against
+    const buyPrice = b.cost / b.qty;
+    out.push({
+      id: s.order.id,
+      symbol: "SPY",
+      type: inst.type,
+      strike: parseFloat(inst.strike_price),
+      expiry: inst.expiration_date,
+      contracts: s.f.qty,
+      realizedPnl: Math.round((s.f.price - buyPrice) * s.f.qty * 100 * 100) / 100,
+    });
+  }
+  return out;
+}
+
+// ── Today's SPY entry-side order state (code-enforced frequency gates) ─────────
+// Walks today's option orders (newest first, stops paginating once past today)
+// and returns, for SPY single-leg BUY orders created today (ET):
+//   entries     — FILLED buy orders, newest first (one order = one entry attempt)
+//   workingBuys — still-live (unfilled/partially filled) buy orders, each
+//                 { order, ageMs } — an entry in flight the snapshot can't see
+//                 as a position yet (root cause of the 7/1 double-position).
+const LIVE_ORDER_STATES = ["queued", "confirmed", "unconfirmed", "partially_filled", "new"];
+
+export async function getTodaySpyEntryState(todayET) {
+  const toET = (iso) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
+  const orders = [];
+  let next = `/options/orders/?account_numbers=${ACCT()}`;
+  while (next) {
+    const page = await rhGet(next);
+    const results = page.results || [];
+    orders.push(...results);
+    const oldest = results[results.length - 1];
+    if (!results.length || (oldest && toET(oldest.created_at) < todayET)) break;
+    next = page.next || null;
+  }
+
+  const todaysBuys = orders.filter(
+    (o) => (o.legs || []).length === 1 && o.legs[0].side === "buy" && toET(o.created_at) === todayET
+  );
+
+  const instCache = {};
+  const isSpy = async (o) => {
+    const url = o.legs[0].option;
+    try {
+      const inst = instCache[url] || (instCache[url] = await rhGet(url));
+      return inst.chain_symbol === "SPY";
+    } catch {
+      return true; // fail-safe: treat unknown as SPY so the entry gates stay conservative
+    }
+  };
+
+  const entries = [], workingBuys = [];
+  for (const o of todaysBuys) {
+    if (o.state === "filled") {
+      if (await isSpy(o)) entries.push(o);
+    } else if (LIVE_ORDER_STATES.includes(o.state)) {
+      if (await isSpy(o)) workingBuys.push({ order: o, ageMs: Date.now() - new Date(o.created_at).getTime() });
+    }
+  }
+  return { entries, workingBuys };
+}
+
 // ── WRITE helpers (orders) — used ONLY by the armed stop-watcher (watch.mjs) ────
 // These place/cancel REAL orders. They run only when watch.mjs is ARMED
 // (WATCHER_ARMED=1, DRY_RUN off). The order payload follows Robinhood's options
